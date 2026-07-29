@@ -1,0 +1,8 @@
+node_modules/
+connectwise-profile/
+Backups/
+Logs/
+
+*.log
+*.zip
+*.xlsx
