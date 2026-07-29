@@ -2,6 +2,7 @@ node_modules/
 connectwise-profile/
 Backups/
 Logs/
+runtime/
 
 *.log
 *.zip
