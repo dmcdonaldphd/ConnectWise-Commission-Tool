@@ -1,4 +1,4 @@
 @echo off
 cd /d "%~dp0"
-runtime\node.exe commission-menu.js
+runtime\node.exe app\commission-menu.js
 pause

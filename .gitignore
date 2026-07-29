@@ -1,9 +1,23 @@
-node_modules/
-connectwise-profile/
+# Dependencies
+/node_modules/
+
+# Runtime data
 Backups/
 Logs/
-runtime/
+connectwise-profile/
 
-*.log
-*.zip
+# Temporary/generated files
+commission-write-*.json
+*.working.xlsx
+
+# Local commission workbooks
 *.xlsx
+!*.template.xlsx
+
+# Build output (future)
+dist/
+build/
+
+# OS/editor files
+Thumbs.db
+.DS_Store
