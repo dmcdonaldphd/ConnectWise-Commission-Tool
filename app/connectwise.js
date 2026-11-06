@@ -160,15 +160,24 @@ async function getProjectInvoices(requestContext, projectId) {
     ],
   };
 
-  const action = await postConnectWiseAction(
-    requestContext,
-    'System/GetMultilineDataAction_projectinvoicelist',
-    payload,
-    'GetMultilineDataAction',
-    'SystemCommon'
-  );
-
-  return action.multilineRows.map((item) => JSON.parse(item.row));
+  const invoices = [];
+  const pageSignatures = new Set();
+  for (let page = 1; page <= 1000; page++) {
+    payload.activePage = page;
+    const action = await postConnectWiseAction(
+      requestContext, 'System/GetMultilineDataAction_projectinvoicelist',
+      payload, 'GetMultilineDataAction', 'SystemCommon'
+    );
+    if (!Array.isArray(action.multilineRows)) throw new Error('ConnectWise returned an invalid project invoice list.');
+    const rows = action.multilineRows.map(item => JSON.parse(item.row));
+    if (!rows.length) return invoices;
+    const signature = JSON.stringify(rows.map(row => [row.billing_log_recid, row.invoice_number]));
+    if (pageSignatures.has(signature)) throw new Error('ConnectWise repeated an invoice page; the invoice list may be incomplete.');
+    pageSignatures.add(signature);
+    invoices.push(...rows);
+    if (rows.length < payload.maxResult) return invoices;
+  }
+  throw new Error('ConnectWise invoice pagination exceeded the safety limit; no complete list is available.');
 }
 
 async function getInvoiceCalculations(requestContext, billingLogRecID) {
@@ -202,9 +211,16 @@ async function getInvoicePayments(requestContext, billingLogRecID) {
 }
 
 function determinePaymentStatus(invoice, payments) {
-  const invoiceAmount = Number(invoice.invoice_amount || 0);
-  const paidAmount = Number(invoice.paid_amount || 0);
-  const balance = Number(payments.invoiceBalance || 0);
+  const numeric = (value, field) => {
+    if (value === null || value === undefined || String(value).trim() === '' ||
+        !['number', 'string'].includes(typeof value) || !Number.isFinite(Number(value)))
+      throw new Error(`ConnectWise returned a missing or invalid ${field}; payment status cannot be determined.`);
+    return Number(value);
+  };
+  const invoiceAmount = numeric(invoice.invoice_amount, 'invoice amount');
+  const paidAmount = Object.prototype.hasOwnProperty.call(invoice, 'paid_amount') &&
+    (invoice.paid_amount === null || invoice.paid_amount === '') ? 0 : numeric(invoice.paid_amount, 'paid amount');
+  const balance = numeric(payments && payments.invoiceBalance, 'invoice balance');
 
   if (balance <= 0.005 && invoiceAmount > 0) {
     return 'Paid';

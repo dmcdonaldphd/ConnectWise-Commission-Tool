@@ -5,6 +5,7 @@ const readline = require('readline');
 const { chromium, BASE_URL } = require('./connectwise');
 const { loadWorkbook } = require('./workbook');
 const { reconcileWorkbook } = require('./app');
+const { describeRunStatus } = require('./audit');
 
 const paths = require('./paths');
 
@@ -168,27 +169,49 @@ async function main() {
       'Once ConnectWise is fully loaded, return here and press ENTER...'
     );
 
-    for (let index = 0; index < selected.length; index += 1) {
-      const fileName = selected[index].fileName;
-
-      console.log('');
-      console.log('==================================================');
-      console.log(`Workbook ${index + 1} of ${selected.length}: ${fileName}`);
-      console.log('==================================================');
-
-      await reconcileWorkbook(context, fileName);
+    const results = await processWorkbooks(context, selected);
+    if (results.some(result => ['FAILED', 'COMPLETED_WITH_ERRORS'].includes(result.status))) {
+      process.exitCode = 1;
     }
-
-    console.log('');
-    console.log('All selected workbooks have been processed.');
   } finally {
     await context.close();
   }
 }
 
-main().catch((error) => {
+async function processWorkbooks(context, selected, reconcile = reconcileWorkbook) {
+  const results = [];
+  for (let index = 0; index < selected.length; index += 1) {
+    const fileName = selected[index].fileName;
+
+    console.log('');
+    console.log('==================================================');
+    console.log(`Workbook ${index + 1} of ${selected.length}: ${fileName}`);
+    console.log('==================================================');
+
+    try {
+      results.push(await reconcile(context, fileName));
+    } catch (error) {
+      console.error(`${fileName}: FAILED — ${error.message}`);
+      results.push({ workbookFilename: fileName, status: 'FAILED', auditLogPath: error.auditLogPath });
+    }
+  }
+
+  console.log('');
+  console.log('Selected workbook results:');
+  for (const result of results) {
+    console.log(`${result.workbookFilename}: ${describeRunStatus(result.status)}`);
+    if (result.auditLogPath) console.log(`  Audit: ${result.auditLogPath}`);
+  }
+  const needsAttention = results.some(result => result.status !== 'COMPLETED');
+  console.log(needsAttention ? 'Processing finished. Review the results above and saved run summaries.' : 'All selected workbooks completed successfully.');
+  return results;
+}
+
+if (require.main === module) main().catch((error) => {
   console.error('');
   console.error('FATAL ERROR');
   console.error(error.stack || error.message);
   process.exitCode = 1;
 });
+
+module.exports = { processWorkbooks, findCommissionWorkbooks, main };

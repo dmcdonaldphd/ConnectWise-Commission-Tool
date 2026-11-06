@@ -566,6 +566,19 @@ async function writeWorkbook(payload) {
   const h = table.headers;
   const affected = new Set();
   const insertions = insertionRows(payload);
+  // Defend the writer boundary too: no fill/insert may reuse an invoice number
+  // already in Commission or reserved by an earlier operation in this payload.
+  const invoiceKey = value => String(value === null || value === undefined ? '' : value).trim().toUpperCase();
+  const occupiedInvoices = new Set();
+  for (let r = table.dataStart; r <= table.dataEnd; r++) {
+    const key = invoiceKey(rowValue(rows.get(r), h.get('invoice #'), ss));
+    if (key) occupiedInvoices.add(key);
+  }
+  for (const operation of [...(payload.blankRowFills || []), ...insertions.map(item => item.insert)]) {
+    const key = invoiceKey(operation.invoice);
+    if (!key || occupiedInvoices.has(key)) fail(`Safety stop: blank or duplicate invoice in write plan: ${operation.invoice}.`);
+    occupiedInvoices.add(key);
+  }
   protectUnsupportedReferences(sheetXml, insertions.length);
   clearPreviousHighlights(rows, table, styles, affected);
   trace(`Offline writer: Commission=${sheetName}, data rows ${table.dataStart}..${table.dataEnd}, update=${(payload.existingRowUpdates||[]).length}, fill=${(payload.blankRowFills||[]).length}, insert=${insertions.length}`);
@@ -589,8 +602,7 @@ async function writeWorkbook(payload) {
     if (isPresent(row.cells.get(h.get('invoice #')))) fail(`Refusing to overwrite existing invoice at row ${fill.rowNumber}.`);
     assignCell(row, h.get('invoice #'), String(fill.invoice), false, 'green', styles);
     assignCell(row, h.get('inv amt (pretax)'), fill.invoiceAmount, false, 'green', styles);
-    if (fill.invoiceDate !== null && fill.invoiceDate !== undefined)
-      assignCell(row, h.get('invoice date'), fill.invoiceDate, true, 'green', styles);
+    assignCell(row, h.get('invoice date'), fill.invoiceDate, true, 'green', styles);
     assignCell(row, h.get('paid amt (pretax)'), fill.paidAmount, false, 'green', styles);
     assignCell(row, h.get('paid date'), fill.paidDate, true, 'green', styles);
     affected.add(row.rowNumber);
@@ -704,7 +716,13 @@ async function writeWorkbook(payload) {
   } finally {
     if (fs.existsSync(temp)) await fs.promises.unlink(temp).catch(()=>{});
   }
-  trace(`Workbook saved successfully without Microsoft Excel. ${affected.size} affected row(s); historical sheets unchanged.`);
+  // The replacement has committed. A trace-file failure must not report that
+  // the workbook write itself failed; the caller records this warning in audit.
+  try {
+    trace(`Workbook saved successfully without Microsoft Excel. ${affected.size} affected row(s); historical sheets unchanged.`);
+  } catch (error) {
+    console.warn(`Workbook was saved, but its writer trace could not be finalized: ${error.message}`);
+  }
 }
 async function main() {
   if (process.argv.length < 3) fail('Usage: node xlsx-writer.js PAYLOAD_PATH [TRACE_PATH]');

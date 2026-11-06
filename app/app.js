@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { randomUUID } = require('crypto');
+const { CHANGE_ACTIONS, saveRunAudit, describeRunStatus } = require('./audit');
 
 const paths = require('./paths');
 
@@ -15,6 +17,7 @@ const {
   loadWorkbook,
   getWorksheet,
   getHeaderMap,
+  getCellValue,
   PAID_HISTORY_REQUIRED_HEADERS,
   readProjects,
   groupRowsByProject,
@@ -95,7 +98,7 @@ function connectWiseInvoiceDateToDate(value) {
     : null;
 }
 
-function formatDate(value, useUtc = false) {
+function formatDate(value, useUtc = true) {
   if (!value) {
     return '';
   }
@@ -273,6 +276,7 @@ function printInvoiceDetails(invoiceData) {
 function addAuditEntry(auditEntries, entry) {
   auditEntries.push({
     timestamp: new Date().toISOString(),
+    result: CHANGE_ACTIONS.has(entry.action) ? 'PLANNED' : entry.action.startsWith('REVIEW') ? 'REVIEW' : 'INFO',
     ...entry,
   });
 }
@@ -287,6 +291,7 @@ function printSummary(summary) {
   console.log(
     `Projects processed:          ${summary.projectsProcessed}`
   );
+  console.log(`Projects completed / failed: ${summary.projectsSucceeded} / ${summary.projectsFailed}`);
   console.log(
     `Invoices reviewed:           ${summary.invoicesReviewed}`
   );
@@ -344,7 +349,7 @@ async function reconcileWorkbook(context, workbookFilename) {
     paths.LOG_DIR
   );
 
-  const runTimestamp = formatTimestamp();
+  const runTimestamp = `${formatTimestamp()}-${randomUUID().slice(0, 8)}`;
 
   const backupPath = path.join(
     backupsDirectory,
@@ -356,98 +361,157 @@ async function reconcileWorkbook(context, workbookFilename) {
     `${path.parse(WORKBOOK_FILENAME).name} - Reconciliation - ${runTimestamp}.csv`
   );
 
-  const temporaryWorkbookPath = path.join(
-    paths.TEMP_DIR,
-    `${path.parse(WORKBOOK_FILENAME).name}.working.xlsx`
-  );
-
-  const workbook = await loadWorkbook(
-    workbookPath
-  );
-
-  const sheet = getWorksheet(
-    workbook,
-    'Commission'
-  );
-
-  const paidHistorySheets = workbook.worksheets.filter((candidateSheet) =>
-    String(candidateSheet.name || '')
-      .trim()
-      .toLowerCase()
-      .startsWith('paid to emp')
-  );
-
-  if (paidHistorySheets.length === 0) {
-    throw new Error(
-      'No worksheet beginning with "Paid to Emp" was found.'
-    );
-  }
-
-  const alreadyPaidInvoices = new Map();
-  const paidHistoryDuplicates = [];
-
-  for (const paidSheet of paidHistorySheets) {
-    const paidColumns = getHeaderMap(
-      paidSheet,
-      PAID_HISTORY_REQUIRED_HEADERS
-    );
-
-    for (
-      let rowNumber = 2;
-      rowNumber <= paidSheet.actualRowCount;
-      rowNumber += 1
-    ) {
-      const row = paidSheet.getRow(rowNumber);
-      const invoiceNumber = row.getCell(paidColumns.get('Invoice #')).value;
-      const normalizedInvoice =
-        normalizeInvoiceNumber(invoiceNumber);
-
-      if (!normalizedInvoice) {
-        continue;
-      }
-
-      const record = {
-        invoiceNumber: String(invoiceNumber).trim(),
-        paycheckDate: row.getCell(paidColumns.get('Paycheck Date')).value,
-        rowNumber,
-        sheetName: paidSheet.name,
-      };
-
-      if (!alreadyPaidInvoices.has(normalizedInvoice)) {
-        alreadyPaidInvoices.set(normalizedInvoice, record);
-      } else {
-        paidHistoryDuplicates.push({
-          normalizedInvoice,
-          first: alreadyPaidInvoices.get(normalizedInvoice),
-          duplicate: record,
-        });
-      }
-    }
-  }
-
-  const workbookRows = readProjects(sheet);
-  const projects = groupRowsByProject(
-    workbookRows
-  );
-
-  const existingRowUpdates = [];
-  const blankRowFills = [];
-  const newRowInserts = [];
   const auditEntries = [];
 
   const summary = {
     projectsProcessed: 0,
+    projectsSucceeded: 0,
+    projectsFailed: 0,
     invoicesReviewed: 0,
     rowsUpdated: 0,
     blankRowsFilled: 0,
     rowsInserted: 0,
     workbookOnlyInvoices: 0,
     zeroDollarInvoices: 0,
-    duplicateWarnings: paidHistoryDuplicates.length,
+    duplicateWarnings: 0,
     alreadyPaidSkipped: 0,
   };
 
+  let workbookWritten = false;
+  let writeUncertain = false;
+  let backupCreated = false;
+  let fatalError = null;
+  let writePayloadPath = null;
+  const summaryLogPath = path.join(logsDirectory,
+    `${path.parse(WORKBOOK_FILENAME).name} - Run Summary - ${runTimestamp}.txt`);
+  const result = () => {
+    const reviewCount = auditEntries.filter(entry => entry.result === 'REVIEW').length;
+    return { workbookFilename, workbookWritten, writeUncertain, auditLogPath, summaryLogPath,
+      backupPath: backupCreated ? backupPath : null, summary: { ...summary }, reviewCount,
+      status: fatalError ? 'FAILED' : summary.projectsFailed
+        ? (summary.projectsSucceeded ? 'COMPLETED_WITH_ERRORS' : 'FAILED')
+        : reviewCount ? 'COMPLETED_WITH_REVIEW' : 'COMPLETED' };
+  };
+  fs.mkdirSync(logsDirectory, { recursive: true });
   try {
+    const workbook = await loadWorkbook(
+      workbookPath
+    );
+
+    const sheet = getWorksheet(
+      workbook,
+      'Commission'
+    );
+
+    const paidHistorySheets = workbook.worksheets.filter((candidateSheet) =>
+      String(candidateSheet.name || '')
+        .trim()
+        .toLowerCase()
+        .startsWith('paid to emp')
+    );
+
+    if (paidHistorySheets.length === 0) {
+      throw new Error(
+        'No worksheet beginning with "Paid to Emp" was found.'
+      );
+    }
+
+    const alreadyPaidInvoices = new Map();
+    const paidHistoryDuplicates = [];
+
+    for (const paidSheet of paidHistorySheets) {
+      const paidColumns = getHeaderMap(
+        paidSheet,
+        PAID_HISTORY_REQUIRED_HEADERS
+      );
+
+      for (
+        let rowNumber = 2;
+        rowNumber <= paidSheet.rowCount;
+        rowNumber += 1
+      ) {
+        const row = paidSheet.getRow(rowNumber);
+        const invoiceCell = row.getCell(paidColumns.get('Invoice #'));
+        if (invoiceCell.value && typeof invoiceCell.value === 'object' &&
+            ('formula' in invoiceCell.value || 'sharedFormula' in invoiceCell.value) &&
+            (!Object.prototype.hasOwnProperty.call(invoiceCell.value, 'result') || invoiceCell.value.result === undefined)) {
+          throw new Error(`Paid-history invoice formula has no cached value: ${paidSheet.name} row ${rowNumber}. Open and save it in Excel before reconciling.`);
+        }
+        const invoiceNumber = invoiceCell.text;
+        const normalizedInvoice =
+          normalizeInvoiceNumber(invoiceNumber);
+
+        if (!normalizedInvoice) {
+          continue;
+        }
+
+        const record = {
+          invoiceNumber: String(invoiceNumber).trim(),
+          paycheckDate: row.getCell(paidColumns.get('Paycheck Date')).value,
+          rowNumber,
+          sheetName: paidSheet.name,
+        };
+
+        if (!alreadyPaidInvoices.has(normalizedInvoice)) {
+          alreadyPaidInvoices.set(normalizedInvoice, record);
+        } else {
+          paidHistoryDuplicates.push({
+            normalizedInvoice,
+            first: alreadyPaidInvoices.get(normalizedInvoice),
+            duplicate: record,
+          });
+        }
+      }
+    }
+
+    summary.duplicateWarnings = paidHistoryDuplicates.length;
+    const workbookRows = readProjects(sheet);
+    const projects = groupRowsByProject(workbookRows);
+    // Include invoice cells even on rows with an invalid/missing project ID: they
+    // still occupy an invoice number and must never be duplicated by insertion.
+    const activeInvoices = new Map();
+    const commissionColumns = getHeaderMap(sheet);
+    sheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return;
+      const invoice = normalizeInvoiceNumber(row.getCell(commissionColumns.get('Invoice #')).text);
+      if (!invoice) return;
+      if (!activeInvoices.has(invoice)) activeInvoices.set(invoice, []);
+      activeInvoices.get(invoice).push({ rowNumber,
+        projectID: Number(getCellValue(row.getCell(commissionColumns.get('Project ID')))) });
+    });
+    for (const [invoice, locations] of activeInvoices) {
+      if (locations.length > 1) {
+        summary.duplicateWarnings++;
+        addAuditEntry(auditEntries, { action: 'REVIEW_DUPLICATE', invoice,
+          notes: `Invoice appears in multiple Commission rows: ${locations.map(r => r.rowNumber).join(', ')}. No automatic updates to this invoice.` });
+      }
+      if (alreadyPaidInvoices.has(invoice)) {
+        addAuditEntry(auditEntries, { action: 'REVIEW_ACTIVE_PAID_OVERLAP', invoice,
+          notes: 'Invoice is present in Commission and paid history. It will be skipped; review the active row manually.' });
+      }
+    }
+    // Fetch project lists first so cross-project source conflicts are known before
+    // staging any writes. These authenticated requests remain sequential.
+    const projectLists = new Map();
+    const sourceProjects = new Map();
+    for (const project of projects) {
+      try {
+        const invoices = await getProjectInvoices(context.request, project.projectID);
+        projectLists.set(project.projectID, { invoices });
+        for (const invoice of invoices) {
+          const key = normalizeInvoiceNumber(invoice.invoice_number);
+          if (!key) throw new Error('ConnectWise returned a blank invoice number.');
+          if (!sourceProjects.has(key)) sourceProjects.set(key, new Set());
+          sourceProjects.get(key).add(project.projectID);
+        }
+      } catch (error) { projectLists.set(project.projectID, { error }); }
+    }
+
+
+    const existingRowUpdates = [];
+    const blankRowFills = [];
+    const newRowInserts = [];
+
     console.log('');
     console.log(
       `Paid-history sheets checked: ${paidHistorySheets
@@ -456,6 +520,9 @@ async function reconcileWorkbook(context, workbookFilename) {
     );
 
     for (const duplicate of paidHistoryDuplicates) {
+      addAuditEntry(auditEntries, { action: 'REVIEW_PAID_HISTORY_DUPLICATE',
+        invoice: duplicate.duplicate.invoiceNumber,
+        notes: `Paid-history duplicate in ${duplicate.first.sheetName} row ${duplicate.first.rowNumber} and ${duplicate.duplicate.sheetName} row ${duplicate.duplicate.rowNumber}; excluded from reconciliation.` });
       console.warn(
         `WARNING: Invoice ${duplicate.duplicate.invoiceNumber} appears more than once in paid history: ` +
           `${duplicate.first.sheetName} row ${duplicate.first.rowNumber} and ` +
@@ -488,19 +555,38 @@ async function reconcileWorkbook(context, workbookFilename) {
       console.log(project.description);
       console.log('');
 
+      const checkpoint = { updates: existingRowUpdates.length, fills: blankRowFills.length,
+        inserts: newRowInserts.length, audit: auditEntries.length,
+        rowsUpdated: summary.rowsUpdated, blankRowsFilled: summary.blankRowsFilled,
+        rowsInserted: summary.rowsInserted };
       try {
-        const connectWiseInvoices =
-          await getProjectInvoices(
-            context.request,
-            project.projectID
-          );
+        const listing = projectLists.get(project.projectID);
+        if (listing.error) throw listing.error;
+        const connectWiseInvoices = [];
+        const seen = new Map();
+        for (const invoice of listing.invoices) {
+          const key = normalizeInvoiceNumber(invoice.invoice_number);
+          if (sourceProjects.get(key).size > 1) {
+            throw new Error(`Invoice ${key} was returned for multiple projects; no changes from this project will be written.`);
+          }
+          const existing = seen.get(key);
+          if (existing) {
+            if (String(existing.billing_log_recid) !== String(invoice.billing_log_recid) ||
+                ['invoice_amount', 'paid_amount', 'date_invoice', 'date_paid'].some(field => existing[field] !== invoice[field])) {
+              throw new Error(`Conflicting ConnectWise records for invoice ${key}; no changes from this project will be written.`);
+            }
+            addAuditEntry(auditEntries, { action: 'SKIP_DUPLICATE_SOURCE', projectID: project.projectID,
+              invoice: key, notes: 'Repeated identical ConnectWise invoice record; processed once.' });
+            continue;
+          }
+          seen.set(key, invoice);
+          connectWiseInvoices.push(invoice);
+        }
+
         console.log('');
 
         const workbookInvoiceRows =
           new Map();
-
-        const duplicateWorkbookInvoices =
-          new Set();
 
         const blankWorkbookRows = [];
 
@@ -515,48 +601,7 @@ async function reconcileWorkbook(context, workbookFilename) {
             continue;
           }
 
-          if (
-            workbookInvoiceRows.has(
-              normalizedInvoice
-            )
-          ) {
-            duplicateWorkbookInvoices.add(
-              normalizedInvoice
-            );
-          } else {
-            workbookInvoiceRows.set(
-              normalizedInvoice,
-              row
-            );
-          }
-        }
-
-        for (
-          const duplicateInvoice of
-          duplicateWorkbookInvoices
-        ) {
-          summary.duplicateWarnings += 1;
-
-          console.log(
-            `Workbook duplicate invoice: ${duplicateInvoice}`
-          );
-          console.log(
-            '  ACTION: REVIEW — duplicate invoice number'
-          );
-          console.log('');
-
-          addAuditEntry(auditEntries, {
-            action: 'REVIEW_DUPLICATE',
-            projectID: project.projectID,
-            company: project.company,
-            invoice: duplicateInvoice,
-            rowNumber: '',
-            field: '',
-            oldValue: '',
-            newValue: '',
-            notes:
-              'Duplicate invoice number in workbook',
-          });
+          if (!workbookInvoiceRows.has(normalizedInvoice)) workbookInvoiceRows.set(normalizedInvoice, row);
         }
 
         const connectWiseInvoiceNumbers =
@@ -588,63 +633,6 @@ async function reconcileWorkbook(context, workbookFilename) {
               normalizedInvoice
             );
           }
-
-          const billingLogRecID =
-            invoice.billing_log_recid;
-
-          const [calculations, payments] =
-            await Promise.all([
-              getInvoiceCalculations(
-                context.request,
-                billingLogRecID
-              ),
-              getInvoicePayments(
-                context.request,
-                billingLogRecID
-              ),
-            ]);
-
-          const status =
-            determinePaymentStatus(
-              invoice,
-              payments
-            );
-
-          const pretaxAmount = Number(
-            calculations.invoiceSubTotal || 0
-          );
-
-          if (!hasValue(calculations.invoiceSubTotal) || !Number.isFinite(pretaxAmount)) {
-            throw new Error(`Invoice ${invoiceNumber} has no valid ConnectWise pretax subtotal; no values will be inferred for it.`);
-          }
-
-          const invoiceDate = connectWiseInvoiceDateToDate(invoice.date_invoice);
-
-          const grossPaidAmount = Number(
-            invoice.paid_amount || 0
-          );
-
-          const paidDate =
-            connectWiseDateToDate(
-              invoice.date_paid
-            );
-
-          const balance = Number(
-            payments.invoiceBalance || 0
-          );
-
-          const invoiceData = {
-            invoiceNumber,
-            normalizedInvoice,
-            status,
-            pretaxAmount,
-            invoiceDate,
-            grossPaidAmount,
-            paidDate,
-            balance,
-          };
-
-          printInvoiceDetails(invoiceData);
 
           const alreadyPaidRecord =
             alreadyPaidInvoices.get(
@@ -687,8 +675,75 @@ async function reconcileWorkbook(context, workbookFilename) {
             continue;
           }
 
+          const billingLogRecID =
+            invoice.billing_log_recid;
+
+          const [calculations, payments] =
+            await Promise.all([
+              getInvoiceCalculations(
+                context.request,
+                billingLogRecID
+              ),
+              getInvoicePayments(
+                context.request,
+                billingLogRecID
+              ),
+            ]);
+
+          const status =
+            determinePaymentStatus(
+              invoice,
+              payments
+            );
+
+          const pretaxAmount = Number(
+            calculations.invoiceSubTotal || 0
+          );
+
+          if (!hasValue(calculations.invoiceSubTotal) ||
+              !['number', 'string'].includes(typeof calculations.invoiceSubTotal) || !Number.isFinite(pretaxAmount)) {
+            throw new Error(`Invoice ${invoiceNumber} has no valid ConnectWise pretax subtotal; no values will be inferred for it.`);
+          }
+
+          const readSourceDate = field => {
+            if (!Object.prototype.hasOwnProperty.call(invoice, field))
+              throw new Error(`Invoice ${invoiceNumber} is missing the ConnectWise ${field} field; the project is held for review.`);
+            const value = invoice[field];
+            if (value === null || (typeof value === 'string' && value.trim() === '')) return null;
+            const date = (typeof value === 'number' || typeof value === 'string')
+              ? connectWiseInvoiceDateToDate(value) : null;
+            if (!date) throw new Error(`Invoice ${invoiceNumber} has invalid ConnectWise ${field}; the project is held for review.`);
+            return date;
+          };
+          const invoiceDate = readSourceDate('date_invoice');
+
+          const grossPaidAmount = Number(
+            invoice.paid_amount || 0
+          );
+
+          const paidDate = readSourceDate('date_paid');
+          const desiredPaidAmount = status === 'Paid' ? pretaxAmount : null;
+          const desiredPaidDate = status === 'Paid' ? paidDate : null;
+
+          const balance = Number(
+            payments.invoiceBalance || 0
+          );
+
+          const invoiceData = {
+            invoiceNumber,
+            normalizedInvoice,
+            status,
+            pretaxAmount,
+            invoiceDate,
+            grossPaidAmount,
+            paidDate,
+            balance,
+          };
+
+          printInvoiceDetails(invoiceData);
+
           if (
-            Math.abs(pretaxAmount) < 0.005
+            Math.abs(pretaxAmount) < 0.005 && !activeInvoices.has(normalizedInvoice)
           ) {
             summary.zeroDollarInvoices += 1;
 
@@ -713,9 +768,7 @@ async function reconcileWorkbook(context, workbookFilename) {
           }
 
           if (
-            duplicateWorkbookInvoices.has(
-              normalizedInvoice
-            )
+            (activeInvoices.get(normalizedInvoice) || []).length > 1
           ) {
             console.log(
               '  ACTION: REVIEW — duplicate workbook invoice prevents automatic update'
@@ -724,25 +777,11 @@ async function reconcileWorkbook(context, workbookFilename) {
             continue;
           }
 
-          const existingRow =
-            workbookInvoiceRows.get(
-              normalizedInvoice
-            );
-
-          if (!invoiceDate) {
-            console.warn(`  REVIEW: Invoice ${invoiceNumber} has no valid ConnectWise Invoice Date; an existing date will be preserved.`);
-            addAuditEntry(auditEntries, {
-              action: 'REVIEW_INVOICE_DATE',
-              projectID: project.projectID,
-              company: project.company,
-              invoice: invoiceNumber,
-              rowNumber: existingRow ? existingRow.rowNumber : '',
-              field: 'Invoice Date',
-              oldValue: existingRow ? formatDate(existingRow.invoiceDate, true) : '',
-              newValue: '',
-              notes: 'ConnectWise Invoice Date is missing or invalid; no replacement date was inferred.',
-            });
+          const locations = activeInvoices.get(normalizedInvoice) || [];
+          if (locations.length && locations[0].projectID !== project.projectID) {
+            throw new Error(`Invoice ${invoiceNumber} already exists in Commission row ${locations[0].rowNumber} under another or invalid project; it will not be inserted again.`);
           }
+          const existingRow = workbookInvoiceRows.get(normalizedInvoice);
 
           if (existingRow) {
             const fieldChanges = [];
@@ -755,7 +794,7 @@ async function reconcileWorkbook(context, workbookFilename) {
               });
             }
 
-            if (invoiceDate && formatDate(existingRow.invoiceDate, true) !== formatDate(invoiceDate, true)) {
+            if (formatDate(existingRow.invoiceDate, true) !== formatDate(invoiceDate, true)) {
               fieldChanges.push({
                 field: 'Invoice Date',
                 oldValue: existingRow.invoiceDate,
@@ -763,37 +802,12 @@ async function reconcileWorkbook(context, workbookFilename) {
               });
             }
 
-            if (
-              status === 'Paid' &&
-              (
-                !hasValue(
-                  existingRow.paidAmount
-                ) ||
-                !amountsMatch(
-                  existingRow.paidAmount,
-                  pretaxAmount
-                )
-              )
-            ) {
-              fieldChanges.push({
-                field: 'Paid Amt (Pretax)',
-                oldValue:
-                  existingRow.paidAmount,
-                newValue: pretaxAmount,
-              });
+            if (desiredPaidAmount === null ? hasValue(existingRow.paidAmount)
+              : !hasValue(existingRow.paidAmount) || !amountsMatch(existingRow.paidAmount, desiredPaidAmount)) {
+              fieldChanges.push({ field: 'Paid Amt (Pretax)', oldValue: existingRow.paidAmount, newValue: desiredPaidAmount });
             }
-
-            if (
-              status === 'Paid' &&
-              !hasValue(existingRow.paidDate) &&
-              paidDate
-            ) {
-              fieldChanges.push({
-                field: 'Paid Date',
-                oldValue:
-                  existingRow.paidDate,
-                newValue: paidDate,
-              });
+            if (formatDate(existingRow.paidDate, true) !== formatDate(desiredPaidDate, true)) {
+              fieldChanges.push({ field: 'Paid Date', oldValue: existingRow.paidDate, newValue: desiredPaidDate });
             }
 
             if (fieldChanges.length === 0) {
@@ -825,7 +839,7 @@ async function reconcileWorkbook(context, workbookFilename) {
                   isDate
                     ? formatDate(
                         change.oldValue,
-                        change.field === 'Invoice Date'
+                        true
                       ) || 'blank'
                     : formatCurrency(
                         change.oldValue
@@ -835,7 +849,7 @@ async function reconcileWorkbook(context, workbookFilename) {
                   isDate
                     ? formatDate(
                         change.newValue,
-                        change.field === 'Invoice Date'
+                        true
                       )
                     : formatCurrency(
                         change.newValue
@@ -911,7 +925,7 @@ async function reconcileWorkbook(context, workbookFilename) {
               `    Invoice: blank → ${invoiceNumber}`
             );
             console.log(`    Inv Amt (Pretax): ${formatCurrency(pretaxAmount)}`);
-            console.log(`    Invoice Date: ${formatDate(invoiceDate || blankRow.invoiceDate, true) || 'blank'}`);
+            console.log(`    Invoice Date: ${formatDate(invoiceDate, true) || 'blank'}`);
             console.log(
               `    Paid Amt (Pretax): ${
                 paidAmount === null
@@ -925,7 +939,7 @@ async function reconcileWorkbook(context, workbookFilename) {
               `    Paid Date: ${
                 workbookPaidDate
                   ? formatDate(
-                      workbookPaidDate
+                      workbookPaidDate, true
                     )
                   : 'blank'
               }`
@@ -945,11 +959,11 @@ async function reconcileWorkbook(context, workbookFilename) {
                 `blank; ${formatCurrency(blankRow.invoiceAmount) || 'blank'}; ` +
                 `${formatDate(blankRow.invoiceDate, true) || 'blank'}; ` +
                 `${formatCurrency(blankRow.paidAmount) || 'blank'}; ` +
-                `${formatDate(blankRow.paidDate) || 'blank'}`,
+                `${formatDate(blankRow.paidDate, true) || 'blank'}`,
               newValue:
                 `${invoiceNumber}; ` +
                 `${formatCurrency(pretaxAmount)}; ` +
-                `${formatDate(invoiceDate || blankRow.invoiceDate, true) || 'blank'}; ` +
+                `${formatDate(invoiceDate, true) || 'blank'}; ` +
                 `${
                   paidAmount === null
                     ? 'blank'
@@ -1013,7 +1027,7 @@ async function reconcileWorkbook(context, workbookFilename) {
               `    Paid Date: ${
                 workbookPaidDate
                   ? formatDate(
-                      workbookPaidDate
+                      workbookPaidDate, true
                     )
                   : 'blank'
               }`
@@ -1092,7 +1106,21 @@ async function reconcileWorkbook(context, workbookFilename) {
             });
           }
         }
+        summary.projectsSucceeded++;
       } catch (error) {
+        existingRowUpdates.length = checkpoint.updates;
+        blankRowFills.length = checkpoint.fills;
+        newRowInserts.length = checkpoint.inserts;
+        summary.rowsUpdated = checkpoint.rowsUpdated;
+        summary.blankRowsFilled = checkpoint.blankRowsFilled;
+        summary.rowsInserted = checkpoint.rowsInserted;
+        summary.projectsFailed++;
+        for (const entry of auditEntries.slice(checkpoint.audit)) {
+          if (CHANGE_ACTIONS.has(entry.action)) {
+            entry.result = 'NOT_APPLIED';
+            entry.notes = 'Project failed; this proposed change was discarded.';
+          }
+        }
         console.error(
           `Project ${project.projectID} failed:`
         );
@@ -1126,7 +1154,8 @@ async function reconcileWorkbook(context, workbookFilename) {
       console.log(
         'No workbook changes are required.'
       );
-      return;
+      if (summary.projectsFailed) console.error('Failed projects need attention; no changes from those projects were written.');
+      return result();
     }
 
     console.log('');
@@ -1148,8 +1177,10 @@ async function reconcileWorkbook(context, workbookFilename) {
 
     fs.copyFileSync(
       workbookPath,
-      backupPath
+      backupPath,
+      fs.constants.COPYFILE_EXCL
     );
+    backupCreated = true;
 
     const insertGroups = Array.from(
       newRowInserts.reduce((groups, insert) => {
@@ -1166,7 +1197,24 @@ async function reconcileWorkbook(context, workbookFilename) {
       }, new Map()).values()
     );
 
-    const writePayloadPath = path.join(
+    // Audit the final row addresses after insertion, retaining source addresses
+    // so an employee can compare the saved workbook with its original backup.
+    for (const entry of auditEntries) {
+      if (entry.result !== 'PLANNED' && entry.action !== 'REVIEW_WORKBOOK_ONLY') continue;
+      entry.originalRowNumber = entry.rowNumber;
+      if (entry.action === 'INSERT_NEW_ROW') {
+        const index = newRowInserts.findIndex(insert => insert.projectID === entry.projectID &&
+          normalizeInvoiceNumber(insert.invoice) === normalizeInvoiceNumber(entry.invoice));
+        const insert = newRowInserts[index];
+        entry.rowNumber = insert.afterRowNumber + 1 + newRowInserts.filter((other, otherIndex) =>
+          other.afterRowNumber < insert.afterRowNumber ||
+          (other.afterRowNumber === insert.afterRowNumber && otherIndex < index)).length;
+      } else if (Number.isInteger(entry.rowNumber)) {
+        entry.rowNumber += newRowInserts.filter(insert => insert.afterRowNumber < entry.originalRowNumber).length;
+      }
+    }
+
+    writePayloadPath = path.join(
       paths.TEMP_DIR,
       `commission-write-${runTimestamp}.json`
     );
@@ -1198,6 +1246,7 @@ async function reconcileWorkbook(context, workbookFilename) {
     console.log('');
     console.log('Applying workbook changes without Microsoft Excel...');
 
+    saveRunAudit({ ...result(), status: 'PLANNED' }, auditEntries);
     const writerResult = spawnSync(
       process.execPath,
       [writerScriptPath, writePayloadPath, writerTracePath],
@@ -1208,11 +1257,13 @@ async function reconcileWorkbook(context, workbookFilename) {
       }
     );
 
-    if (fs.existsSync(writePayloadPath)) {
-      fs.unlinkSync(writePayloadPath);
-    }
-
     if (writerResult.error || writerResult.status !== 0) {
+      try {
+        workbookWritten = !fs.readFileSync(workbookPath).equals(fs.readFileSync(backupPath));
+        writeUncertain = workbookWritten;
+      } catch {
+        writeUncertain = true;
+      }
       const details = [
         writerResult.error && writerResult.error.message,
         writerResult.stderr && writerResult.stderr.trim(),
@@ -1223,122 +1274,49 @@ async function reconcileWorkbook(context, workbookFilename) {
       ].filter(Boolean);
 
       throw new Error(
-        `Workbook update failed. The original workbook was not intentionally replaced; the pre-write backup is available.\n${details.join('\n')}`
+        `Workbook update failed. Check the workbook and its pre-write backup before retrying.\n${details.join('\n')}`
       );
     }
 
+    workbookWritten = true;
+    if (writerResult.stderr && writerResult.stderr.trim()) {
+      console.warn(writerResult.stderr.trim());
+      addAuditEntry(auditEntries, { action: 'REVIEW_WRITER_LOG', notes: writerResult.stderr.trim() });
+    }
     if (writerResult.stdout && writerResult.stdout.trim()) {
       console.log(writerResult.stdout.trim());
     }
     console.log(`Offline writer log: ${writerTracePath}`);
 
-    const auditHeaders = [
-      'Timestamp',
-      'Action',
-      'Project ID',
-      'Company',
-      'Invoice',
-      'Workbook Row',
-      'Field',
-      'Old Value',
-      'New Value',
-      'Notes',
-    ];
-
-    const auditLines = [
-      auditHeaders
-        .map(csvEscape)
-        .join(','),
-    ];
-
-    for (const entry of auditEntries) {
-      auditLines.push(
-        [
-          entry.timestamp,
-          entry.action,
-          entry.projectID,
-          entry.company,
-          entry.invoice,
-          entry.rowNumber,
-          entry.field,
-          entry.oldValue,
-          entry.newValue,
-          entry.notes,
-        ]
-          .map(csvEscape)
-          .join(',')
-      );
-    }
-
-    fs.writeFileSync(
-      auditLogPath,
-      auditLines.join('\r\n'),
-      'utf8'
-    );
-
-    console.log('');
-    console.log(
-      '=========================================='
-    );
-    console.log(
-      'Commission Reconciliation Complete'
-    );
-    console.log('');
-    console.log(
-      `Projects processed:          ${summary.projectsProcessed}`
-    );
-    console.log(
-      `Invoices reviewed:           ${summary.invoicesReviewed}`
-    );
-    console.log(
-      `Existing rows updated:       ${summary.rowsUpdated}`
-    );
-    console.log(
-      `Blank rows filled:           ${summary.blankRowsFilled}`
-    );
-    console.log(
-      `New rows inserted:           ${summary.rowsInserted}`
-    );
-    console.log(
-      `Workbook-only invoices:      ${summary.workbookOnlyInvoices}`
-    );
-    console.log(
-      `Zero-dollar invoices ignored:${String(
-        summary.zeroDollarInvoices
-      ).padStart(7)}`
-    );
-    console.log(
-      `Already paid invoices skipped:${String(
-        summary.alreadyPaidSkipped
-      ).padStart(6)}`
-    );
-    console.log('');
-    console.log(
-      `Workbook updated:\n${workbookPath}`
-    );
-    console.log('');
-    console.log(
-      `Backup created:\n${backupPath}`
-    );
-    console.log('');
-    console.log(
-      `Audit log created:\n${auditLogPath}`
-    );
-    console.log(
-      '=========================================='
-    );
+    console.log(`Workbook updated: ${workbookPath}`);
+    console.log(`Backup created: ${backupPath}`);
+    return result();
   } catch (error) {
-    if (
-      fs.existsSync(
-        temporaryWorkbookPath
-      )
-    ) {
-      fs.unlinkSync(
-        temporaryWorkbookPath
-      );
-    }
-
+    fatalError = error;
+    error.auditLogPath = auditLogPath;
+    addAuditEntry(auditEntries, { action: 'RUN_ERROR', result: 'FAILED', notes: error.message });
     throw error;
+  } finally {
+    try {
+      if (writePayloadPath && fs.existsSync(writePayloadPath)) fs.unlinkSync(writePayloadPath);
+    } catch (cleanupError) {
+      addAuditEntry(auditEntries, { action: 'REVIEW_TEMP_FILE', notes: `Could not remove temporary write plan: ${cleanupError.message}` });
+    }
+    for (const entry of auditEntries) {
+      if (entry.result === 'PLANNED') entry.result = writeUncertain ? 'UNCONFIRMED' : workbookWritten ? 'APPLIED' : 'NOT_APPLIED';
+    }
+    const outcome = result();
+    addAuditEntry(auditEntries, { action: 'RUN_SUMMARY', result: outcome.status,
+      notes: `${summary.projectsSucceeded} completed project(s), ${summary.projectsFailed} failed; workbook ${writeUncertain ? 'write outcome unconfirmed; compare with backup' : workbookWritten ? 'updated' : 'unchanged'}.` });
+    try {
+      saveRunAudit(outcome, auditEntries);
+      console.log(`Run result: ${describeRunStatus(outcome.status)}`);
+      console.log(`Audit log: ${auditLogPath}`);
+      console.log(`Run summary: ${summaryLogPath}`);
+    } catch (auditError) {
+      console.error(`Could not finalize the audit: ${auditError.message}`);
+      if (!fatalError) throw Object.assign(new Error(`Workbook ${workbookWritten ? 'was saved' : 'was not changed'}, but its final audit could not be saved: ${auditError.message}`), { auditLogPath });
+    }
   }
 }
 

@@ -18,15 +18,51 @@ ConnectWise's invoice subtotal and **Invoice Date** from its invoice date. It
 replaces differing existing values, fills project invoice slots, and populates
 newly inserted invoices. These fields are populated for unpaid and partially paid
 invoices as well as fully paid invoices; the existing payment and commission
-eligibility rules still apply. Already-paid, duplicate-workbook, and zero-dollar
-invoice exclusions are unchanged.
+eligibility rules still apply. Already-paid and duplicate-workbook invoices are
+excluded. New zero-dollar invoices are ignored; an invoice already on Commission
+is refreshed if its ConnectWise subtotal has changed to zero.
 
 Both column headers are required and may be reordered. Existing-row changes are
 highlighted yellow; newly populated invoice fields and inserted rows are green.
-The reconciliation CSV includes old/new invoice values. Missing or invalid source
-dates are flagged for review and do not erase existing dates; missing or invalid
-subtotals produce a project error rather than an inferred amount. Historical
-`Paid to Emp*` worksheets are never updated by this enhancement.
+The reconciliation CSV includes old/new invoice values. ConnectWise is the source
+of truth for all four managed amount/date fields: invoice amount, invoice date,
+paid amount and paid date. Differing nonblank values are corrected too. An
+explicitly empty source date clears an old date. A missing response field or
+invalid subtotal, balance, or date holds that project's changes for review rather
+than inferring a value. Historical `Paid to Emp*` worksheets are never updated.
+
+## Payment corrections and run results
+
+The existing full-payment eligibility rule is preserved: **Paid Amt (Pretax)** is
+the invoice subtotal only when ConnectWise reports the invoice fully paid. If it
+now reports unpaid or partially paid, old paid amounts and paid dates are cleared;
+the commission formula remains in place for Excel to recalculate. Fully paid
+invoices receive the current ConnectWise paid date, including corrections or an
+explicitly blank date. Partial gross payments are not written into the pretax
+commission basis.
+
+Every selected workbook run saves a reconciliation CSV and a readable **Run
+Summary** text file in `Logs`, including no-change runs and failed runs. The CSV's
+`Result` column distinguishes `APPLIED`, `NOT_APPLIED`, `REVIEW` and other status
+entries. A writer error with an uncertain file outcome is labelled `UNCONFIRMED`
+for comparison with the backup. Final row numbers account for inserted rows, with original addresses
+retained in `Original Workbook Row` for comparison with the backup. Proposed
+changes are saved before writing, then finalized after the writer returns.
+
+Project changes are held until all invoice retrieval for that project succeeds.
+If one project fails, its proposed changes are discarded and labelled as not
+applied; completed projects can still be written. The menu lists each workbook's
+result, continues sequentially after an individual workbook failure, and returns
+a nonzero exit code when projects or workbooks fail.
+
+Invoice checks span the Commission sheet, including rows with missing/invalid
+project IDs. Identical repeated source records are processed once. Conflicting
+records or invoices returned under multiple source projects hold the affected
+projects for review. Existing duplicates and active/paid-history overlaps are
+flagged for manual review. Paid-history scans include records after blank rows
+and read cached formula values; an uncached invoice formula stops safely.
+ConnectWise invoice lists are paginated past 250 results and repeated pages are
+rejected as incomplete retrievals.
 
 ## Data safety
 
@@ -56,7 +92,8 @@ Node.js 24. The tests generate synthetic workbooks in temporary directories and
 mock ConnectWise responses. They exercise the actual offline writer without
 launching a browser, connecting to ConnectWise, or using Microsoft Excel.
 
-Coverage includes invoice-field replacement, reordered/missing/duplicate headers,
+Coverage includes source corrections and reversals, sparse paid history, duplicate
+prevention, failed-project rollback, saved run outcomes, pagination, header mapping,
 blank-row fills, insertion with and without table growth, highlights, repeated
 runs, backups, formulas, historical sheets, and rejected writes. GitHub Actions
 runs the suite on Linux and Windows in UTC and America/Chicago time zones.
