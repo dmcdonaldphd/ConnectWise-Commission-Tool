@@ -4,7 +4,8 @@
   "description": "",
   "main": "commission-menu.js",
   "scripts": {
-    "start": "node commission-menu.js"
+    "start": "node commission-menu.js",
+    "test": "node --test"
   },
   "keywords": [],
   "author": "",
