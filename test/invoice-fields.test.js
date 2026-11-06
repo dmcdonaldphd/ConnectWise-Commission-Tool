@@ -13,6 +13,7 @@ const { loadWorkbook, getHeaderMap, readProjects } = require('../app/workbook');
 const { writeWorkbook } = require('../app/xlsx-writer');
 const { getProjectInvoices } = require('../app/connectwise');
 const { processWorkbooks } = require('../app/commission-menu');
+const { createSettingsStore, initializeWorkbookFolder } = require('../app/settings');
 
 // All workbooks and ConnectWise responses are synthetic. Tests exercise the real
 // reconciliation, response parsing, child-process writer, and saved XLSX files.
@@ -579,4 +580,21 @@ test('rejects a repeated full ConnectWise page instead of silently using an inco
   const rows = Array.from({ length: 250 }, (_, index) => ({ row: JSON.stringify({ billing_log_recid: index, invoice_number: `INV-${index}` }) }));
   const request = { post: async () => ({ ok: () => true, text: async () => JSON.stringify({ success: true, data: { isSuccess: true, action: { multilineRows: rows } } }) }) };
   await assert.rejects(getProjectInvoices(request, 101), /repeated an invoice page/);
+});
+
+test('selected-folder reconciliation writes only the selected copy, with backups/logs nearby and temp state per user', async t => {
+  const f = await setup(t, [record('INV-A')]);
+  const original = f.target;
+  const selected = path.join(f.dir, 'Selected workbook folder'); fs.mkdirSync(selected);
+  f.target = path.join(selected, path.basename(original));
+  fs.copyFileSync(original, f.target);
+  const state = path.join(f.dir, 'Private user data');
+  await initializeWorkbookFolder({ store: createSettingsStore(state), pickFolder: async () => selected });
+  const result = await reconcile(f, [source('INV-A')]);
+  assert.equal(result.cell(2, 'Inv Amt (Pretax)').value, 1234.56);
+  assert.deepEqual(fs.readFileSync(original), f.before);
+  assert.equal(path.dirname(result.outcome.auditLogPath), path.join(selected, 'Logs'));
+  assert.equal(path.dirname(result.outcome.backupPath), path.join(selected, 'Backups'));
+  assert.equal(paths.PROFILE_DIR, path.join(state, 'connectwise-profile'));
+  assert.deepEqual(fs.readdirSync(path.join(state, 'Temp')), []);
 });

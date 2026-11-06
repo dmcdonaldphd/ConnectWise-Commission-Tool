@@ -5,10 +5,13 @@
 Backups/
 Logs/
 connectwise-profile/
+settings.json
+settings.json.*.tmp
 
 # Temporary/generated files
 commission-write-*.json
 *.working.xlsx
+*.commission-write-*.tmp
 
 # Local commission workbooks
 *.xlsx

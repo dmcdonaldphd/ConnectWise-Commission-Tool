@@ -2,9 +2,9 @@
   "name": "connectwise-commissions",
   "version": "1.0.0",
   "description": "",
-  "main": "commission-menu.js",
+  "main": "app/commission-menu.js",
   "scripts": {
-    "start": "node commission-menu.js",
+    "start": "node app/commission-menu.js",
     "test": "node --test"
   },
   "keywords": [],
