@@ -84,7 +84,18 @@ function connectWiseDateToDate(value) {
   );
 }
 
-function formatDate(value) {
+// ExcelJS reads Excel date-only cells as UTC midnight. Keep invoice dates in
+// that same representation so comparisons and audit dates survive a second run
+// in Windows time zones west of UTC. ConnectWise timestamps follow the existing
+// payment-date convention before their calendar date is stored in Excel.
+function connectWiseInvoiceDateToDate(value) {
+  const date = connectWiseDateToDate(value);
+  return date
+    ? new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
+    : null;
+}
+
+function formatDate(value, useUtc = false) {
   if (!value) {
     return '';
   }
@@ -99,9 +110,9 @@ function formatDate(value) {
   }
 
   return (
-    `${date.getMonth() + 1}/` +
-    `${date.getDate()}/` +
-    `${date.getFullYear()}`
+    `${(useUtc ? date.getUTCMonth() : date.getMonth()) + 1}/` +
+    `${useUtc ? date.getUTCDate() : date.getDate()}/` +
+    `${useUtc ? date.getUTCFullYear() : date.getFullYear()}`
   );
 }
 
@@ -233,6 +244,7 @@ function copyTemplateRow(
 
 function printInvoiceDetails(invoiceData) {
   console.log(`Invoice: ${invoiceData.invoiceNumber}`);
+  console.log(`  Invoice Date:  ${formatDate(invoiceData.invoiceDate, true) || 'Unavailable'}`);
   console.log(
     `  Status:        ${invoiceData.status}`
   );
@@ -602,6 +614,12 @@ async function reconcileWorkbook(context, workbookFilename) {
             calculations.invoiceSubTotal || 0
           );
 
+          if (!hasValue(calculations.invoiceSubTotal) || !Number.isFinite(pretaxAmount)) {
+            throw new Error(`Invoice ${invoiceNumber} has no valid ConnectWise pretax subtotal; no values will be inferred for it.`);
+          }
+
+          const invoiceDate = connectWiseInvoiceDateToDate(invoice.date_invoice);
+
           const grossPaidAmount = Number(
             invoice.paid_amount || 0
           );
@@ -620,6 +638,7 @@ async function reconcileWorkbook(context, workbookFilename) {
             normalizedInvoice,
             status,
             pretaxAmount,
+            invoiceDate,
             grossPaidAmount,
             paidDate,
             balance,
@@ -710,8 +729,39 @@ async function reconcileWorkbook(context, workbookFilename) {
               normalizedInvoice
             );
 
+          if (!invoiceDate) {
+            console.warn(`  REVIEW: Invoice ${invoiceNumber} has no valid ConnectWise Invoice Date; an existing date will be preserved.`);
+            addAuditEntry(auditEntries, {
+              action: 'REVIEW_INVOICE_DATE',
+              projectID: project.projectID,
+              company: project.company,
+              invoice: invoiceNumber,
+              rowNumber: existingRow ? existingRow.rowNumber : '',
+              field: 'Invoice Date',
+              oldValue: existingRow ? formatDate(existingRow.invoiceDate, true) : '',
+              newValue: '',
+              notes: 'ConnectWise Invoice Date is missing or invalid; no replacement date was inferred.',
+            });
+          }
+
           if (existingRow) {
             const fieldChanges = [];
+
+            if (!hasValue(existingRow.invoiceAmount) || !amountsMatch(existingRow.invoiceAmount, pretaxAmount)) {
+              fieldChanges.push({
+                field: 'Inv Amt (Pretax)',
+                oldValue: existingRow.invoiceAmount,
+                newValue: pretaxAmount,
+              });
+            }
+
+            if (invoiceDate && formatDate(existingRow.invoiceDate, true) !== formatDate(invoiceDate, true)) {
+              fieldChanges.push({
+                field: 'Invoice Date',
+                oldValue: existingRow.invoiceDate,
+                newValue: invoiceDate,
+              });
+            }
 
             if (
               status === 'Paid' &&
@@ -770,21 +820,22 @@ async function reconcileWorkbook(context, workbookFilename) {
               for (
                 const change of fieldChanges
               ) {
+                const isDate = change.field === 'Paid Date' || change.field === 'Invoice Date';
                 const oldDisplay =
-                  change.field ===
-                  'Paid Date'
+                  isDate
                     ? formatDate(
-                        change.oldValue
+                        change.oldValue,
+                        change.field === 'Invoice Date'
                       ) || 'blank'
                     : formatCurrency(
                         change.oldValue
                       ) || 'blank';
 
                 const newDisplay =
-                  change.field ===
-                  'Paid Date'
+                  isDate
                     ? formatDate(
-                        change.newValue
+                        change.newValue,
+                        change.field === 'Invoice Date'
                       )
                     : formatCurrency(
                         change.newValue
@@ -844,6 +895,8 @@ async function reconcileWorkbook(context, workbookFilename) {
               invoice: invoiceNumber,
               rowNumber:
                 blankRow.rowNumber,
+              invoiceAmount: pretaxAmount,
+              invoiceDate,
               paidAmount,
               paidDate:
                 workbookPaidDate,
@@ -857,6 +910,8 @@ async function reconcileWorkbook(context, workbookFilename) {
             console.log(
               `    Invoice: blank → ${invoiceNumber}`
             );
+            console.log(`    Inv Amt (Pretax): ${formatCurrency(pretaxAmount)}`);
+            console.log(`    Invoice Date: ${formatDate(invoiceDate || blankRow.invoiceDate, true) || 'blank'}`);
             console.log(
               `    Paid Amt (Pretax): ${
                 paidAmount === null
@@ -885,10 +940,16 @@ async function reconcileWorkbook(context, workbookFilename) {
               rowNumber:
                 blankRow.rowNumber,
               field:
-                'Invoice / Paid Amt / Paid Date',
-              oldValue: 'blank',
+                'Invoice / Inv Amt (Pretax) / Invoice Date / Paid Amt / Paid Date',
+              oldValue:
+                `blank; ${formatCurrency(blankRow.invoiceAmount) || 'blank'}; ` +
+                `${formatDate(blankRow.invoiceDate, true) || 'blank'}; ` +
+                `${formatCurrency(blankRow.paidAmount) || 'blank'}; ` +
+                `${formatDate(blankRow.paidDate) || 'blank'}`,
               newValue:
                 `${invoiceNumber}; ` +
+                `${formatCurrency(pretaxAmount)}; ` +
+                `${formatDate(invoiceDate || blankRow.invoiceDate, true) || 'blank'}; ` +
                 `${
                   paidAmount === null
                     ? 'blank'
@@ -920,6 +981,8 @@ async function reconcileWorkbook(context, workbookFilename) {
               description:
                 project.description,
               invoice: invoiceNumber,
+              invoiceAmount: pretaxAmount,
+              invoiceDate,
               paidAmount,
               paidDate:
                 workbookPaidDate,
@@ -935,6 +998,8 @@ async function reconcileWorkbook(context, workbookFilename) {
             console.log(
               `    Invoice: ${invoiceNumber}`
             );
+            console.log(`    Inv Amt (Pretax): ${formatCurrency(pretaxAmount)}`);
+            console.log(`    Invoice Date: ${formatDate(invoiceDate, true) || 'blank'}`);
             console.log(
               `    Paid Amt (Pretax): ${
                 paidAmount === null
@@ -963,10 +1028,12 @@ async function reconcileWorkbook(context, workbookFilename) {
               rowNumber:
                 `after ${lastProjectRowNumber}`,
               field:
-                'Invoice / Paid Amt / Paid Date',
+                'Invoice / Inv Amt (Pretax) / Invoice Date / Paid Amt / Paid Date',
               oldValue: '',
               newValue:
                 `${invoiceNumber}; ` +
+                `${formatCurrency(pretaxAmount)}; ` +
+                `${formatDate(invoiceDate, true) || 'blank'}; ` +
                 `${
                   paidAmount === null
                     ? 'blank'

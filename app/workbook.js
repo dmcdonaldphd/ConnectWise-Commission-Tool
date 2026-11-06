@@ -172,7 +172,9 @@ const COMMISSION_REQUIRED_HEADERS = [
   'Project ID',
   'Project/Ticket',
   'Notes',
+  'Invoice Date',
   'Invoice #',
+  'Inv Amt (Pretax)',
   'Paid Amt (Pretax)',
   'Paid Date',
   'Comm',
@@ -219,6 +221,8 @@ function readProjects(sheet) {
       description: cleanText(row.getCell(columns.get('Project/Ticket')).text),
       notes: cleanText(row.getCell(columns.get('Notes')).text),
       invoice: cleanText(row.getCell(columns.get('Invoice #')).text),
+      invoiceAmount: getCellValue(row.getCell(columns.get('Inv Amt (Pretax)'))),
+      invoiceDate: getCellValue(row.getCell(columns.get('Invoice Date'))),
       paidAmount: getCellValue(row.getCell(columns.get('Paid Amt (Pretax)'))),
       paidDate: getCellValue(row.getCell(columns.get('Paid Date'))),
     });

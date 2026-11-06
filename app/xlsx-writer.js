@@ -10,9 +10,9 @@ const path = require('path');
 const JSZip = require('jszip');
 
 const REQUIRED = ['%', 'Company', 'Project ID', 'Project/Ticket', 'Notes',
-  'Invoice #', 'Paid Amt (Pretax)', 'Paid Date', 'Comm', 'Paycheck Date'];
+  'Invoice Date', 'Invoice #', 'Inv Amt (Pretax)', 'Paid Amt (Pretax)', 'Paid Date', 'Comm', 'Paycheck Date'];
 const MANAGED = new Set(['%', 'company', 'project id', 'project/ticket',
-  'notes', 'invoice #', 'paid amt (pretax)', 'paid date', 'paycheck date']);
+  'notes', 'invoice date', 'invoice #', 'inv amt (pretax)', 'paid amt (pretax)', 'paid date', 'paycheck date']);
 const XML_ESC = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
   .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 const XML_UNESC = s => String(s).replace(/&(?:amp|lt|gt|quot|apos);/g, x => ({
@@ -131,7 +131,7 @@ function ensureRow(table, rows, rowNumber) {
 }
 function excelSerial(value) {
   const d = new Date(value);
-  if (Number.isNaN(d.getTime())) fail('Invalid Paid Date: ' + value);
+  if (Number.isNaN(d.getTime())) fail('Invalid commission date: ' + value);
   return Math.floor((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - Date.UTC(1899, 11, 30)) / 86400000);
 }
 function replaceStyle(raw, style) {
@@ -155,7 +155,9 @@ function assignCell(row, col, value, isDate, highlight, styles, allowRemovingMov
   if (hasFormula(old) && !allowRemovingMovedFormula) fail(`Safety stop: attempted to replace formula at ${colname(col)}${row.rowNumber}.`);
   const a = cellAttrs(old);
   if (a.cm || a.vm) fail(`Safety stop: unsupported Excel cell metadata at ${colname(col)}${row.rowNumber}.`);
-  const baseStyle = Number(a.s || 0);
+  let baseStyle = Number(a.s || 0);
+  if (isDate && value !== null && value !== undefined && value !== '')
+    baseStyle = styles.getDateStyle(baseStyle);
   const style = highlight ? styles.getStyle(baseStyle, highlight) : baseStyle;
   const reference = `${colname(col)}${row.rowNumber}`;
   const prefix = `<c r="${reference}"${style ? ` s="${style}"` : ''}`;
@@ -215,6 +217,27 @@ function makeStyles(xml) {
   }
   const fills = [];
   const newXfs = [];
+  const dateStyles = new Map();
+  const getXf = id => xfs[id] || newXfs[id - xfs.length];
+  // Newly added workbook columns can still have Excel's General format. A
+  // numeric date needs a date number format to display and round-trip as a date.
+  // Preserve existing custom formats, fonts, borders, alignment and fills.
+  function getDateStyle(oldIndex) {
+    const xf = getXf(oldIndex);
+    if (!xf) fail(`Unsupported date style ID: ${oldIndex}`);
+    if (Number((/\bnumFmtId="(\d+)"/.exec(xf) || [, '0'])[1]) !== 0) return oldIndex;
+    if (dateStyles.has(oldIndex)) return dateStyles.get(oldIndex);
+    let dated = /\bnumFmtId="[^"]*"/.test(xf)
+      ? xf.replace(/\bnumFmtId="[^"]*"/, 'numFmtId="14"')
+      : xf.replace(/^<xf/, '<xf numFmtId="14"');
+    dated = /\bapplyNumberFormat="[^"]*"/.test(dated)
+      ? dated.replace(/\bapplyNumberFormat="[^"]*"/, 'applyNumberFormat="1"')
+      : dated.replace(/^<xf/, '<xf applyNumberFormat="1"');
+    const id = xfs.length + newXfs.length;
+    newXfs.push(dated);
+    dateStyles.set(oldIndex, id);
+    return id;
+  }
   const rgb = { yellow: 'FFFFFF00', green: 'FFDAF2D0' };
   const colors = new Map();
   // A style added earlier in this write operation is not in the original
@@ -233,12 +256,12 @@ function makeStyles(xml) {
     }
     const key = `${oldIndex}/${color}`;
     if (cache.has(key)) return cache.get(key);
-    if (!xfs[oldIndex] || !rgb[color]) fail(`Unsupported style ID or highlight: ${key}`);
+    if (!getXf(oldIndex) || !rgb[color]) fail(`Unsupported style ID or highlight: ${key}`);
     if (!colors.has(color)) {
       colors.set(color, Number(fillMatch[1]) + fills.length);
       fills.push(`<fill><patternFill patternType="solid"><fgColor rgb="${rgb[color]}"/><bgColor indexed="64"/></patternFill></fill>`);
     }
-    let xf = xfs[oldIndex];
+    let xf = getXf(oldIndex);
     if (/\bfillId="[^"]*"/.test(xf)) xf = xf.replace(/\bfillId="[^"]*"/, `fillId="${colors.get(color)}"`);
     else xf = xf.replace(/^<xf/, `<xf fillId="${colors.get(color)}"`);
     if (/\bapplyFill="[^"]*"/.test(xf)) xf = xf.replace(/\bapplyFill="[^"]*"/, 'applyFill="1"');
@@ -255,7 +278,7 @@ function makeStyles(xml) {
     ret = ret.replace(xfMatch[0], xfMatch[0].replace(`count="${xfMatch[1]}"`, `count="${Number(xfMatch[1]) + newXfs.length}"`).replace('</cellXfs>', newXfs.join('') + '</cellXfs>'));
     return ret;
   }
-  return { getStyle, clearStyle, serialize };
+  return { getStyle, getDateStyle, clearStyle, serialize };
 }
 function rebuildRow(row) {
   if (row.rowNumber < 1) fail('Invalid row number.');
@@ -555,8 +578,8 @@ async function writeWorkbook(payload) {
     for (const change of u.changes || []) {
       const field = normalized(change.field);
       if (!MANAGED.has(field)) fail(`Unexpected field update: ${change.field}`);
-      if (field !== 'paid date' && field !== 'paid amt (pretax)') fail(`Unexpected reconciliation update field: ${change.field}`);
-      assignCell(row, h.get(field), change.newValue, field === 'paid date', 'yellow', styles);
+      if (!['invoice date', 'inv amt (pretax)', 'paid date', 'paid amt (pretax)'].includes(field)) fail(`Unexpected reconciliation update field: ${change.field}`);
+      assignCell(row, h.get(field), change.newValue, field === 'paid date' || field === 'invoice date', 'yellow', styles);
       affected.add(row.rowNumber);
     }
   }
@@ -565,6 +588,9 @@ async function writeWorkbook(payload) {
     verifyProject(row, fill.projectID, h, ss);
     if (isPresent(row.cells.get(h.get('invoice #')))) fail(`Refusing to overwrite existing invoice at row ${fill.rowNumber}.`);
     assignCell(row, h.get('invoice #'), String(fill.invoice), false, 'green', styles);
+    assignCell(row, h.get('inv amt (pretax)'), fill.invoiceAmount, false, 'green', styles);
+    if (fill.invoiceDate !== null && fill.invoiceDate !== undefined)
+      assignCell(row, h.get('invoice date'), fill.invoiceDate, true, 'green', styles);
     assignCell(row, h.get('paid amt (pretax)'), fill.paidAmount, false, 'green', styles);
     assignCell(row, h.get('paid date'), fill.paidDate, true, 'green', styles);
     affected.add(row.rowNumber);
@@ -607,6 +633,8 @@ async function writeWorkbook(payload) {
       assignCell(row, h.get('project id'), Number(insert.projectID), false, null, styles);
       assignCell(row, h.get('project/ticket'), insert.description, false, null, styles);
       assignCell(row, h.get('invoice #'), insert.invoice, false, null, styles);
+      assignCell(row, h.get('inv amt (pretax)'), insert.invoiceAmount, false, null, styles);
+      assignCell(row, h.get('invoice date'), insert.invoiceDate, true, null, styles);
       assignCell(row, h.get('paid amt (pretax)'), insert.paidAmount, false, null, styles);
       assignCell(row, h.get('paid date'), insert.paidDate, true, null, styles);
       // Match the old Excel writer: green highlight across the entire new row.
