@@ -11,6 +11,8 @@ const paths = require('../app/paths');
 const { reconcileWorkbook } = require('../app/app');
 const { loadWorkbook, getHeaderMap, readProjects } = require('../app/workbook');
 const { writeWorkbook } = require('../app/xlsx-writer');
+const { getProjectInvoices } = require('../app/connectwise');
+const { processWorkbooks } = require('../app/commission-menu');
 
 // All workbooks and ConnectWise responses are synthetic. Tests exercise the real
 // reconciliation, response parsing, child-process writer, and saved XLSX files.
@@ -97,7 +99,7 @@ function source(invoice, { project = 101, amount = 1234.56, date = SOURCE_DATE,
     date_paid: status === 'Paid' ? SOURCE_DATE : null };
 }
 
-async function reconcile(fixture, invoices) {
+async function reconcile(fixture, invoices, { failInvoice, failProject } = {}) {
   const requests = [];
   const context = { request: { post: async (url, options) => {
     const outer = JSON.parse(new URLSearchParams(options.data).get('actionMessage'));
@@ -106,27 +108,38 @@ async function reconcile(fixture, invoices) {
     let action;
     if (url.includes('GetMultilineDataAction_projectinvoicelist')) {
       const project = Number(payload.multilineUserParams[0].paramValue);
-      action = { multilineRows: invoices.filter(i => i.project === project).map(i => ({ row: JSON.stringify(i) })) };
+      if (project === failProject) throw new Error('Synthetic project listing failure');
+      const start = (payload.activePage - 1) * payload.maxResult;
+      action = { multilineRows: invoices.filter(i => i.project === project).slice(start, start + payload.maxResult).map(i => ({ row: JSON.stringify(i) })) };
       assert(payload.columns.includes('date_invoice'));
     } else {
       const invoice = invoices.find(i => i.billing_log_recid === payload.billingLogRecID);
       assert(invoice, 'Unexpected invoice request');
+      if (invoice.invoice_number === failInvoice) throw new Error('Synthetic invoice retrieval failure');
       action = url.includes('GetInvoiceCalculationsPodAction')
         ? { invoiceCalculationsPodViewModel: { invoiceSubTotal: invoice.invoiceSubTotal } }
         : { invoiceCreditsAndPaymentsPodViewModel: { invoiceBalance: invoice.invoiceBalance } };
     }
     return { ok: () => true, text: async () => JSON.stringify({ success: true, data: { isSuccess: true, action } }) };
   } } };
-  await reconcileWorkbook(context, path.basename(fixture.target));
+  let outcome;
+  try {
+    outcome = await reconcileWorkbook(context, path.basename(fixture.target));
+    fixture.lastAuditPath = outcome.auditLogPath;
+  } catch (error) {
+    fixture.lastAuditPath = error.auditLogPath;
+    throw error;
+  }
   const workbook = await loadWorkbook(fixture.target);
   const sheet = workbook.getWorksheet('Commission');
   const columns = getHeaderMap(sheet);
-  return { workbook, sheet, requests,
+  return { workbook, sheet, requests, outcome,
     cell: (row, name) => sheet.getCell(row, columns.get(name)),
     rows: readProjects(sheet) };
 }
 
 function audit(fixture) {
+  if (fixture.lastAuditPath) return fs.readFileSync(fixture.lastAuditPath, 'utf8');
   const dir = path.join(fixture.dir, 'Logs');
   const file = fs.readdirSync(dir).find(name => name.endsWith('.csv'));
   assert(file, 'Expected saved reconciliation audit');
@@ -178,8 +191,8 @@ test('replaces differing invoice fields by header after columns are reordered', 
   assert.equal(result.cell(2, 'Inv Amt (Pretax)').value, 1234.56);
   assert.deepEqual(result.cell(2, 'Invoice Date').value, INVOICE_DATE);
   assert.equal(result.cell(2, 'Extra column').value, 'Retain me');
-  assert.equal(result.cell(2, 'Paid Amt (Pretax)').value, 75);
-  assert.deepEqual(result.cell(2, 'Paid Date').value, OLD_DATE);
+  assert.equal(result.cell(2, 'Paid Amt (Pretax)').value ?? null, null);
+  assert.equal(result.cell(2, 'Paid Date').value ?? null, null);
   assert.equal(result.cell(2, 'Comm').value.formula, 'L2*E2');
   assert(audit(f).includes('Invoice Date,9/1/2026,10/15/2026'));
 });
@@ -240,21 +253,23 @@ test('clears the previous invoice-amount highlight when only the date changes ne
   assert.equal(result.cell(2, 'Invoice Date').value.toISOString(), '2026-10-16T00:00:00.000Z');
 });
 
-test('preserves existing dates and logs review when the source date is unavailable', async t => {
+test('rejects invalid source dates and holds the whole project without writing', async t => {
   const f = await setup(t, [record('INV-1', 101, { 'Invoice Date': OLD_DATE })]);
   const result = await reconcile(f, [source('INV-1', { date: 'not-a-date' })]);
   assert.deepEqual(result.cell(2, 'Invoice Date').value, OLD_DATE);
-  assert.equal(result.cell(2, 'Inv Amt (Pretax)').value, 1234.56);
-  assert(audit(f).includes('REVIEW_INVOICE_DATE'));
+  assert.equal(result.cell(2, 'Inv Amt (Pretax)').value ?? null, null);
+  assert.equal(result.outcome.status, 'FAILED');
+  assert(audit(f).includes('PROJECT_ERROR'));
+  assert.deepEqual(fs.readFileSync(f.target), f.before);
 });
 
-test('preserves an existing date on a blank project row when the source date is missing', async t => {
+test('clears an old date on a blank project slot when ConnectWise explicitly has no date', async t => {
   const f = await setup(t, [record(null, 101, { 'Invoice Date': OLD_DATE })]);
   const result = await reconcile(f, [source('INV-NEW', { date: null })]);
   assert.equal(result.cell(2, 'Invoice #').value, 'INV-NEW');
   assert.equal(result.cell(2, 'Inv Amt (Pretax)').value, 1234.56);
-  assert.deepEqual(result.cell(2, 'Invoice Date').value, OLD_DATE);
-  assert(audit(f).includes('REVIEW_INVOICE_DATE'));
+  assert.equal(result.cell(2, 'Invoice Date').value ?? null, null);
+  assert(audit(f).includes('FILL_BLANK_ROW'));
 });
 
 test('accepts numeric timestamp strings at local midnight without repeat date changes', async t => {
@@ -291,7 +306,7 @@ test('does not infer a subtotal from missing or invalid ConnectWise data', async
 });
 
 test('retains already-paid, zero-dollar and duplicate-workbook exclusions', async t => {
-  const f = await setup(t, [record('INV-PAID'), record('INV-ZERO'), record('INV-DUP'), record('INV-DUP')], { history: ['INV-PAID'] });
+  const f = await setup(t, [record('INV-PAID'), record('INV-DUP'), record('INV-DUP')], { history: ['INV-PAID'] });
   await reconcile(f, [source('INV-PAID'), source('INV-ZERO', { amount: 0 }), source('INV-DUP')]);
   assert.deepEqual(fs.readFileSync(f.target), f.before);
   assert(!fs.existsSync(path.join(f.dir, 'Backups')));
@@ -322,4 +337,246 @@ test('writer rejects formula replacement in invoice metadata and preserves the o
   await assert.rejects(writeWorkbook({ workbookPath: f.target, existingRowUpdates: [{ rowNumber: 2,
     projectID: 101, invoice: 'INV-1', changes: [{ field: 'Inv Amt (Pretax)', newValue: 1234.56 }] }] }), /attempted to replace formula/);
   assert.deepEqual(fs.readFileSync(f.target), f.before);
+});
+
+async function rewriteFixture(fixture, change) {
+  const workbook = await loadWorkbook(fixture.target);
+  change(workbook);
+  await workbook.xlsx.writeFile(fixture.target);
+  fixture.before = fs.readFileSync(fixture.target);
+}
+
+test('finds paid invoices after blank history rows, including cached formula values', async t => {
+  const f = await setup(t, [record(null)]);
+  await rewriteFixture(f, workbook => {
+    workbook.getWorksheet('Paid to Emp 2026').getCell('C100').value = { formula: '"INV-PAID"', result: 'INV-PAID' };
+  });
+  const result = await reconcile(f, [source('INV-PAID')]);
+  assert.equal(result.rows.filter(row => row.invoice === 'INV-PAID').length, 0);
+  assert.deepEqual(fs.readFileSync(f.target), f.before);
+  assert(audit(f).includes('SKIP_ALREADY_PAID'));
+});
+
+test('stops safely when a history invoice formula lacks its cached value', async t => {
+  const f = await setup(t, [record(null)]);
+  await rewriteFixture(f, workbook => {
+    workbook.getWorksheet('Paid to Emp 2026').getCell('C100').value = { formula: '"INV-PAID"' };
+  });
+  await assert.rejects(reconcile(f, [source('INV-PAID')]), /no cached value/);
+  assert.deepEqual(fs.readFileSync(f.target), f.before);
+  assert(audit(f).includes('RUN_ERROR'));
+});
+
+test('does not insert a source invoice already listed under a different project', async t => {
+  const f = await setup(t, [record('INV-A'), record('INV-X', 202)]);
+  const result = await reconcile(f, [source('INV-X')]);
+  assert.equal(result.rows.filter(row => row.invoice === 'INV-X').length, 1);
+  assert.equal(result.outcome.status, 'COMPLETED_WITH_ERRORS');
+  assert.deepEqual(fs.readFileSync(f.target), f.before);
+  assert(audit(f).includes('already exists in Commission row'));
+});
+
+test('blocks duplicate insertion even when the occupied row has an invalid Project ID', async t => {
+  const f = await setup(t, [record('INV-A'), record('INV-X', 'invalid')]);
+  await reconcile(f, [source('INV-X')]);
+  assert.deepEqual(fs.readFileSync(f.target), f.before);
+  assert(audit(f).includes('another or invalid project'));
+});
+
+test('flags existing cross-project duplicates without changing either invoice', async t => {
+  const f = await setup(t, [record('INV-DUP'), record('INV-DUP', 202)]);
+  const result = await reconcile(f, [source('INV-DUP')]);
+  assert.equal(result.outcome.status, 'COMPLETED_WITH_REVIEW');
+  assert.deepEqual(fs.readFileSync(f.target), f.before);
+  assert(audit(f).includes('REVIEW_DUPLICATE'));
+});
+
+test('processes an identical repeated source invoice once', async t => {
+  const f = await setup(t, [record(null)]);
+  const invoice = source('INV-NEW');
+  const result = await reconcile(f, [invoice, { ...invoice }]);
+  assert.equal(result.rows.filter(row => row.invoice === 'INV-NEW').length, 1);
+  assert(audit(f).includes('SKIP_DUPLICATE_SOURCE'));
+});
+
+test('holds conflicting source records with the same invoice number', async t => {
+  const f = await setup(t, [record(null)]);
+  const first = source('INV-NEW');
+  const result = await reconcile(f, [first, { ...first, billing_log_recid: 'different-record' }]);
+  assert.equal(result.outcome.status, 'FAILED');
+  assert.deepEqual(fs.readFileSync(f.target), f.before);
+  assert(audit(f).includes('Conflicting ConnectWise records'));
+});
+
+test('detects an invoice returned by two source projects before staging writes', async t => {
+  const f = await setup(t, [record('INV-A'), record('INV-B', 202)]);
+  const result = await reconcile(f, [source('INV-NEW'), source('INV-NEW', { project: 202 })]);
+  assert.equal(result.outcome.summary.projectsFailed, 2);
+  assert.equal(result.outcome.workbookWritten, false);
+  assert.deepEqual(fs.readFileSync(f.target), f.before);
+});
+
+test('discards a failed project plan while writing a different successful project', async t => {
+  const f = await setup(t, [record('INV-A'), record('INV-B', 202)]);
+  const result = await reconcile(f, [source('INV-NEW'), source('INV-FAIL'), source('INV-B', { project: 202 })], { failInvoice: 'INV-FAIL' });
+  assert.equal(result.outcome.status, 'COMPLETED_WITH_ERRORS');
+  assert.equal(result.outcome.summary.projectsFailed, 1);
+  assert.equal(result.outcome.summary.projectsSucceeded, 1);
+  assert.equal(result.outcome.summary.rowsInserted, 0);
+  assert.equal(result.rows.some(row => row.invoice === 'INV-NEW'), false);
+  assert.equal(result.cell(2, 'Inv Amt (Pretax)').value ?? null, null);
+  assert.equal(result.cell(3, 'Inv Amt (Pretax)').value, 1234.56);
+  const csv = audit(f);
+  assert(csv.includes('NOT_APPLIED'));
+  assert(csv.includes('APPLIED'));
+  assert(csv.includes('PROJECT_ERROR'));
+});
+
+test('an early project listing failure still produces a failed run audit', async t => {
+  const f = await setup(t, [record('INV-A')]);
+  const result = await reconcile(f, [], { failProject: 101 });
+  assert.equal(result.outcome.status, 'FAILED');
+  assert.deepEqual(fs.readFileSync(f.target), f.before);
+  assert(audit(f).includes('Synthetic project listing failure'));
+  assert(fs.readFileSync(result.outcome.summaryLogPath, 'utf8').includes('Projects failed: 1'));
+});
+
+for (const status of ['Unpaid', 'Partially Paid']) {
+  test(`clears stale paid amount/date when ConnectWise now says ${status}`, async t => {
+    const f = await setup(t, [record('INV-A', 101, { 'Paid Amt (Pretax)': 1000, 'Paid Date': OLD_DATE })]);
+    const invoice = source('INV-A', { status });
+    if (status === 'Partially Paid') invoice.date_paid = SOURCE_DATE;
+    const result = await reconcile(f, [invoice]);
+    assert.equal(result.cell(2, 'Paid Amt (Pretax)').value ?? null, null);
+    assert.equal(result.cell(2, 'Paid Date').value ?? null, null);
+    assert.equal(result.cell(2, 'Comm').value.formula, 'I2*A2');
+    assert.equal(result.cell(2, 'Paid Amt (Pretax)').fill.fgColor.argb, 'FFFFFF00');
+    assert(audit(f).includes('Paid Amt (Pretax)'));
+    await assertPreservedParts(f.before, fs.readFileSync(f.target));
+  });
+}
+
+test('replaces a nonblank paid date and paid amount with corrected ConnectWise data', async t => {
+  const f = await setup(t, [record('INV-A', 101, { 'Paid Amt (Pretax)': 1000, 'Paid Date': OLD_DATE })]);
+  const invoice = source('INV-A', { status: 'Paid' });
+  invoice.date_paid = new Date(2026, 9, 18, 12).getTime();
+  const result = await reconcile(f, [invoice]);
+  assert.equal(result.cell(2, 'Paid Amt (Pretax)').value, 1234.56);
+  assert.equal(result.cell(2, 'Paid Date').value.toISOString(), '2026-10-18T00:00:00.000Z');
+  assert(audit(f).includes('Paid Date,9/1/2026,10/18/2026'));
+  const first = fs.readFileSync(f.target);
+  await reconcile(f, [invoice]);
+  assert.deepEqual(fs.readFileSync(f.target), first);
+});
+
+test('explicitly empty source dates clear existing dates rather than preserving stale data', async t => {
+  const f = await setup(t, [record('INV-A', 101, { 'Invoice Date': OLD_DATE, 'Paid Date': OLD_DATE })]);
+  const invoice = source('INV-A', { status: 'Paid', date: null });
+  invoice.date_paid = null;
+  const result = await reconcile(f, [invoice]);
+  assert.equal(result.cell(2, 'Invoice Date').value ?? null, null);
+  assert.equal(result.cell(2, 'Paid Date').value ?? null, null);
+  assert.equal(result.cell(2, 'Paid Amt (Pretax)').value, 1234.56);
+});
+
+test('missing balance or missing date field holds the project instead of inferring Paid or blank', async t => {
+  const f = await setup(t, [record('INV-A', 101, { 'Paid Amt (Pretax)': 1000, 'Paid Date': OLD_DATE })]);
+  for (const field of ['invoiceBalance', 'date_paid', 'date_invoice', 'paid_amount', 'invoice_amount']) {
+    const invoice = source('INV-A', { status: 'Paid' });
+    delete invoice[field];
+    const result = await reconcile(f, [invoice]);
+    assert.equal(result.outcome.status, 'FAILED');
+    assert.deepEqual(fs.readFileSync(f.target), f.before);
+  }
+});
+
+test('accepts an explicit empty paid amount as no payment when the balance is valid', async t => {
+  const f = await setup(t, [record('INV-A')]);
+  const invoice = source('INV-A');
+  invoice.paid_amount = null;
+  const result = await reconcile(f, [invoice]);
+  assert.equal(result.outcome.status, 'COMPLETED');
+  assert.equal(result.cell(2, 'Paid Amt (Pretax)').value ?? null, null);
+});
+
+test('updates an existing invoice changed to zero while skipping a new zero-dollar invoice', async t => {
+  const f = await setup(t, [record('INV-A', 101, { 'Inv Amt (Pretax)': 1000, 'Paid Amt (Pretax)': 1000, 'Paid Date': OLD_DATE })]);
+  const result = await reconcile(f, [source('INV-A', { amount: 0 }), source('INV-ZERO', { amount: 0 })]);
+  assert.equal(result.cell(2, 'Inv Amt (Pretax)').value, 0);
+  assert.equal(result.cell(2, 'Paid Amt (Pretax)').value ?? null, null);
+  assert.equal(result.rows.some(row => row.invoice === 'INV-ZERO'), false);
+});
+
+test('saves audits and summaries for matching no-change runs without creating backups', async t => {
+  const f = await setup(t, [record('INV-A', 101, { 'Inv Amt (Pretax)': 1234.56, 'Invoice Date': INVOICE_DATE })]);
+  const first = await reconcile(f, [source('INV-A')]);
+  const second = await reconcile(f, [source('INV-A')]);
+  assert.equal(second.outcome.status, 'COMPLETED');
+  assert.notEqual(first.outcome.auditLogPath, second.outcome.auditLogPath);
+  assert(fs.existsSync(first.outcome.auditLogPath));
+  assert(fs.existsSync(second.outcome.summaryLogPath));
+  assert(audit(f).includes('RUN_SUMMARY'));
+  assert(!fs.existsSync(path.join(f.dir, 'Backups')));
+  assert.deepEqual(fs.readFileSync(f.target), f.before);
+});
+
+test('writer failures retain a backup and an audit distinguishing proposals from applied changes', async t => {
+  const f = await setup(t, [record('INV-A', 101, { 'Inv Amt (Pretax)': { formula: '1+1', result: 2 } })]);
+  await assert.rejects(reconcile(f, [source('INV-A')]), /Workbook update failed/);
+  assert.deepEqual(fs.readFileSync(f.target), f.before);
+  const csv = audit(f);
+  assert(csv.includes('NOT_APPLIED'));
+  assert(csv.includes('RUN_ERROR'));
+  assert(csv.includes('FAILED'));
+  const backup = fs.readdirSync(path.join(f.dir, 'Backups'))[0];
+  assert.deepEqual(fs.readFileSync(path.join(f.dir, 'Backups', backup)), f.before);
+  assert(!fs.readdirSync(f.dir).some(name => name.startsWith('commission-write-')));
+});
+
+test('audit records final row numbers after inserting above updated invoices', async t => {
+  const f = await setup(t, [record('INV-A'), record('INV-B', 202)]);
+  await reconcile(f, [source('INV-A'), source('INV-NEW'), source('INV-B', { project: 202 })]);
+  const csv = audit(f);
+  const update = csv.split('\n').find(line => line.includes('INV-B,4,Invoice Date'));
+  assert(update, 'Expected final row 4 in audit');
+  assert(update.trim().endsWith('APPLIED,3'), 'Expected original row 3 to remain available');
+});
+
+test('writer independently rejects a duplicate invoice in a fill or insertion payload', async t => {
+  const f = await setup(t, [record('INV-A'), record(null)]);
+  await assert.rejects(writeWorkbook({ workbookPath: f.target,
+    blankRowFills: [{ rowNumber: 3, projectID: 101, invoice: 'inv-a', invoiceAmount: 1234.56, invoiceDate: INVOICE_DATE }] }), /duplicate invoice/);
+  assert.deepEqual(fs.readFileSync(f.target), f.before);
+});
+
+test('menu reports failures per workbook and continues sequentially to later workbooks', async t => {
+  await setup(t, [record('INV-A')]);
+  const calls = [];
+  const results = await processWorkbooks({}, [{ fileName: 'First.xlsx' }, { fileName: 'Second.xlsx' }], async (_, name) => {
+    calls.push(name);
+    if (name === 'First.xlsx') throw new Error('Synthetic workbook failure');
+    return { workbookFilename: name, status: 'COMPLETED' };
+  });
+  assert.deepEqual(calls, ['First.xlsx', 'Second.xlsx']);
+  assert.deepEqual(results.map(result => result.status), ['FAILED', 'COMPLETED']);
+});
+
+test('fetches subsequent ConnectWise pages rather than stopping at 250 invoices', async () => {
+  const pages = [];
+  const request = { post: async (_, options) => {
+    const payload = JSON.parse(JSON.parse(new URLSearchParams(options.data).get('actionMessage')).payload);
+    pages.push(payload.activePage);
+    const count = payload.activePage === 1 ? 250 : 1;
+    const rows = Array.from({ length: count }, (_, index) => ({ row: JSON.stringify({ billing_log_recid: `${payload.activePage}:${index}`, invoice_number: `INV-${payload.activePage}-${index}` }) }));
+    return { ok: () => true, text: async () => JSON.stringify({ success: true, data: { isSuccess: true, action: { multilineRows: rows } } }) };
+  } };
+  const invoices = await getProjectInvoices(request, 101);
+  assert.equal(invoices.length, 251);
+  assert.deepEqual(pages, [1, 2]);
+});
+
+test('rejects a repeated full ConnectWise page instead of silently using an incomplete list', async () => {
+  const rows = Array.from({ length: 250 }, (_, index) => ({ row: JSON.stringify({ billing_log_recid: index, invoice_number: `INV-${index}` }) }));
+  const request = { post: async () => ({ ok: () => true, text: async () => JSON.stringify({ success: true, data: { isSuccess: true, action: { multilineRows: rows } } }) }) };
+  await assert.rejects(getProjectInvoices(request, 101), /repeated an invoice page/);
 });
