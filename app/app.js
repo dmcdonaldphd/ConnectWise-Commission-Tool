@@ -14,6 +14,8 @@ const {
 const {
   loadWorkbook,
   getWorksheet,
+  getHeaderMap,
+  PAID_HISTORY_REQUIRED_HEADERS,
   readProjects,
   groupRowsByProject,
 } = require('./workbook');
@@ -373,13 +375,18 @@ async function reconcileWorkbook(context, workbookFilename) {
   const paidHistoryDuplicates = [];
 
   for (const paidSheet of paidHistorySheets) {
+    const paidColumns = getHeaderMap(
+      paidSheet,
+      PAID_HISTORY_REQUIRED_HEADERS
+    );
+
     for (
       let rowNumber = 2;
       rowNumber <= paidSheet.actualRowCount;
       rowNumber += 1
     ) {
       const row = paidSheet.getRow(rowNumber);
-      const invoiceNumber = row.getCell(5).value;
+      const invoiceNumber = row.getCell(paidColumns.get('Invoice #')).value;
       const normalizedInvoice =
         normalizeInvoiceNumber(invoiceNumber);
 
@@ -389,7 +396,7 @@ async function reconcileWorkbook(context, workbookFilename) {
 
       const record = {
         invoiceNumber: String(invoiceNumber).trim(),
-        paycheckDate: row.getCell(9).value,
+        paycheckDate: row.getCell(paidColumns.get('Paycheck Date')).value,
         rowNumber,
         sheetName: paidSheet.name,
       };
@@ -719,7 +726,6 @@ async function reconcileWorkbook(context, workbookFilename) {
               )
             ) {
               fieldChanges.push({
-                column: 7,
                 field: 'Paid Amt (Pretax)',
                 oldValue:
                   existingRow.paidAmount,
@@ -733,7 +739,6 @@ async function reconcileWorkbook(context, workbookFilename) {
               paidDate
             ) {
               fieldChanges.push({
-                column: 8,
                 field: 'Paid Date',
                 oldValue:
                   existingRow.paidDate,
@@ -1113,27 +1118,26 @@ async function reconcileWorkbook(context, workbookFilename) {
       'utf8'
     );
 
-    const writerScriptPath = paths.WRITER_SCRIPT;
-
-    console.log('');
-    console.log(
-      'Applying workbook changes through Microsoft Excel...'
+    // Write the XLSX package directly. Microsoft Excel COM automation can
+    // block indefinitely on this workbook even when Excel opens successfully.
+    // This writer touches only the Commission XML, cell styles, and calculation
+    // flags; it preserves historical paid sheets byte-for-byte.
+    const writerScriptPath = path.join(__dirname, 'xlsx-writer.js');
+    const writerTracePath = path.join(
+      logsDirectory,
+      `${path.parse(WORKBOOK_FILENAME).name} - Offline Writer - ${runTimestamp}.log`
     );
 
+    console.log('');
+    console.log('Applying workbook changes without Microsoft Excel...');
+
     const writerResult = spawnSync(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
-        writerScriptPath,
-        '-PayloadPath',
-        writePayloadPath,
-      ],
+      process.execPath,
+      [writerScriptPath, writePayloadPath, writerTracePath],
       {
         encoding: 'utf8',
         windowsHide: true,
+        timeout: 120000,
       }
     );
 
@@ -1141,20 +1145,25 @@ async function reconcileWorkbook(context, workbookFilename) {
       fs.unlinkSync(writePayloadPath);
     }
 
-    if (writerResult.status !== 0) {
-      const writerMessage =
-        writerResult.stderr ||
-        writerResult.stdout ||
-        'Unknown Excel write error.';
+    if (writerResult.error || writerResult.status !== 0) {
+      const details = [
+        writerResult.error && writerResult.error.message,
+        writerResult.stderr && writerResult.stderr.trim(),
+        writerResult.stdout && writerResult.stdout.trim(),
+        writerResult.signal && `Signal: ${writerResult.signal}`,
+        `Exit status: ${writerResult.status === null ? 'not available' : writerResult.status}`,
+        `Offline writer log: ${writerTracePath}`,
+      ].filter(Boolean);
 
       throw new Error(
-        `Workbook update failed. The original workbook was not intentionally replaced.\n${writerMessage.trim()}`
+        `Workbook update failed. The original workbook was not intentionally replaced; the pre-write backup is available.\n${details.join('\n')}`
       );
     }
 
-    if (writerResult.stdout.trim()) {
+    if (writerResult.stdout && writerResult.stdout.trim()) {
       console.log(writerResult.stdout.trim());
     }
+    console.log(`Offline writer log: ${writerTracePath}`);
 
     const auditHeaders = [
       'Timestamp',

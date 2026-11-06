@@ -38,9 +38,7 @@ async function loadWorkbook(filename) {
 
       const xml = await worksheetFile.async('string');
       const sanitizedXml = xml
-        // Standard self-closing dynamic filter nodes.
         .replace(/<dynamicFilter\b[^>]*\/>/gi, '')
-        // Defensive handling in case Excel emits an explicit closing tag.
         .replace(/<dynamicFilter\b[^>]*>[\s\S]*?<\/dynamicFilter>/gi, '');
 
       if (sanitizedXml !== xml) {
@@ -99,15 +97,103 @@ function cleanText(value) {
   return String(value).trim();
 }
 
+function normalizeHeader(value) {
+  return cleanText(value)
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+function getHeaderMap(sheet, requiredHeaders = []) {
+  const headerRow = sheet.getRow(1);
+  const headers = new Map();
+  const displayNames = new Map();
+
+  const lastColumn = Math.max(sheet.columnCount, headerRow.cellCount);
+
+  for (let columnNumber = 1; columnNumber <= lastColumn; columnNumber += 1) {
+    const cell = headerRow.getCell(columnNumber);
+    const headerText = cleanText(cell.text || getCellValue(cell));
+    const normalized = normalizeHeader(headerText);
+
+    if (!normalized) {
+      continue;
+    }
+
+    if (headers.has(normalized)) {
+      throw new Error(
+        `Worksheet "${sheet.name}" has duplicate header "${headerText}" in columns ` +
+        `${headers.get(normalized)} and ${columnNumber}.`
+      );
+    }
+
+    headers.set(normalized, columnNumber);
+    displayNames.set(normalized, headerText);
+  }
+
+  const missing = [];
+
+  for (const requiredHeader of requiredHeaders) {
+    const normalized = normalizeHeader(requiredHeader);
+    if (!headers.has(normalized)) {
+      missing.push(requiredHeader);
+    }
+  }
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Worksheet "${sheet.name}" is missing required column header(s): ${missing.join(', ')}.`
+    );
+  }
+
+  return {
+    get(headerName) {
+      const normalized = normalizeHeader(headerName);
+      const columnNumber = headers.get(normalized);
+
+      if (!columnNumber) {
+        throw new Error(
+          `Worksheet "${sheet.name}" does not contain column header "${headerName}".`
+        );
+      }
+
+      return columnNumber;
+    },
+    has(headerName) {
+      return headers.has(normalizeHeader(headerName));
+    },
+    entries: headers,
+    displayNames,
+  };
+}
+
+const COMMISSION_REQUIRED_HEADERS = [
+  '%',
+  'Company',
+  'Project ID',
+  'Project/Ticket',
+  'Notes',
+  'Invoice #',
+  'Paid Amt (Pretax)',
+  'Paid Date',
+  'Comm',
+  'Paycheck Date',
+];
+
+const PAID_HISTORY_REQUIRED_HEADERS = [
+  'Invoice #',
+  'Paycheck Date',
+];
+
 function readProjects(sheet) {
   const rows = [];
+  const columns = getHeaderMap(sheet, COMMISSION_REQUIRED_HEADERS);
 
   sheet.eachRow((row, rowNumber) => {
     if (rowNumber === 1) {
       return;
     }
 
-    const rawProjectID = getCellValue(row.getCell(3));
+    const rawProjectID = getCellValue(row.getCell(columns.get('Project ID')));
 
     if (
       rawProjectID === null ||
@@ -129,12 +215,12 @@ function readProjects(sheet) {
     rows.push({
       rowNumber,
       projectID,
-      company: cleanText(row.getCell(2).text),
-      description: cleanText(row.getCell(4).text),
-      notes: cleanText(row.getCell(5).text),
-      invoice: cleanText(row.getCell(6).text),
-      paidAmount: getCellValue(row.getCell(7)),
-      paidDate: getCellValue(row.getCell(8)),
+      company: cleanText(row.getCell(columns.get('Company')).text),
+      description: cleanText(row.getCell(columns.get('Project/Ticket')).text),
+      notes: cleanText(row.getCell(columns.get('Notes')).text),
+      invoice: cleanText(row.getCell(columns.get('Invoice #')).text),
+      paidAmount: getCellValue(row.getCell(columns.get('Paid Amt (Pretax)'))),
+      paidDate: getCellValue(row.getCell(columns.get('Paid Date'))),
     });
   });
 
@@ -163,6 +249,10 @@ function groupRowsByProject(rows) {
 module.exports = {
   loadWorkbook,
   getWorksheet,
+  getCellValue,
+  getHeaderMap,
+  COMMISSION_REQUIRED_HEADERS,
+  PAID_HISTORY_REQUIRED_HEADERS,
   readProjects,
   groupRowsByProject,
 };
