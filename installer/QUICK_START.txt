@@ -1,20 +1,26 @@
 PHDTech Commission Tool
 
 1. Open PHDTech Commission Tool from the Start Menu or desktop shortcut.
-2. On first launch, select the folder containing your working commission workbooks.
-   The tool remembers this folder. You can change it from the menu.
-3. Select one workbook or Process all workbooks.
-4. Sign into ConnectWise in the browser if needed. Return to the tool and press
-   Enter when ConnectWise is ready.
-5. Review each run's result and any items marked for manual review.
-6. Open changed workbooks in Microsoft Excel and allow formulas to recalculate
+2. Choose the folder containing your commission workbooks. The app remembers
+   your existing selection, and Change lets you choose another folder.
+3. Check the workbooks you want to reconcile. Close them in Excel.
+4. Click Open ConnectWise. Sign in in the separate ConnectWise window if needed.
+5. When ConnectWise is fully loaded, return to the app and click Continue
+   reconciliation. Keep both windows open while processing finishes.
+6. Review the results. Open Run summary for changes, errors and manual-review
+   items. A partial failure is shown separately from a successful completion.
+7. Open changed workbooks in Microsoft Excel and allow formulas to recalculate
    before using commission totals for payroll.
 
-Backups and Logs are inside the selected workbook folder. Every run saves a
-readable Run Summary in Logs. Close a workbook in Excel before reconciling it.
+Backups and Logs stay inside the selected workbook folder. Every run saves a
+readable Run Summary in Logs. ConnectWise remains the source of truth for the
+invoice amount/date and paid amount/date fields the tool populates.
 
-The installer includes Node.js, application dependencies, and the compatible
-Chromium browser. No separate development-tool installation is needed.
+The installer includes Node.js, dependencies and Chromium. No development-tool
+installation or console commands are required. The HTML interface runs locally;
+it does not upload your workbooks to a website.
 
 Settings and browser sign-in are stored per Windows user. Updating or uninstalling
-the application preserves those settings and your separate workbook folder.
+the application preserves those settings and your workbook folder. No data is moved.
+If you close the interface during processing, the current batch finishes in the
+background. Leave the ConnectWise window open until it closes automatically.

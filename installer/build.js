@@ -16,6 +16,12 @@ function main() {
   const metadata = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   if (!/^\d+\.\d+\.\d+$/.test(metadata.version)) throw new Error('Installer version must have three numeric parts.');
   const stage = preparePackage(root);
+  const csc = path.join(process.env.WINDIR || 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
+  if (!fs.existsSync(csc)) throw new Error('The Windows .NET Framework C# compiler was not found.');
+  const assembly = path.join(root, 'dist', 'launcher-version.cs');
+  fs.writeFileSync(assembly, `using System.Reflection;\n[assembly: AssemblyTitle("PHDTech Commission Tool")]\n[assembly: AssemblyVersion("${metadata.version}.0")]\n`);
+  run(csc, ['/nologo', '/target:winexe', '/platform:x64', '/reference:System.Windows.Forms.dll',
+    `/out:${path.join(stage, 'PHDTech Commission Tool.exe')}`, path.join(__dirname, 'launcher.cs'), assembly]);
   const node = path.join(stage, 'runtime', 'node.exe');
   const npm = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
   if (!fs.existsSync(npm)) throw new Error('Run the build through npm run build:installer so the npm CLI can be located.');

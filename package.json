@@ -1,12 +1,13 @@
 {
   "name": "connectwise-commissions",
-  "version": "1.1.0",
-  "description": "",
-  "main": "app/commission-menu.js",
+  "version": "1.2.0",
+  "description": "Windows desktop tool for reconciling commission workbooks with ConnectWise",
+  "main": "app/gui.js",
   "scripts": {
-    "start": "node app/commission-menu.js",
+    "start": "node app/gui.js",
     "test": "node --test",
-    "build:installer": "node installer/build.js"
+    "build:installer": "node installer/build.js",
+    "start:console": "node app/commission-menu.js"
   },
   "keywords": [],
   "author": "",

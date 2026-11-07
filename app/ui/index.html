@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="session-token" content="__SESSION_TOKEN__">
+  <title>PHDTech · Commission Tool</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/ui.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><div class="brand"><span class="brand-mark">PHD</span><span>PHDTech <span class="brand-divider">/</span> Commission Tool</span></div><span class="local-badge"><span></span> Desktop workspace</span></header>
+  <main>
+    <div class="page-heading"><div><p class="eyebrow">SALES OPERATIONS</p><h1>Commission reconciliation</h1><p class="subtitle">Bring your commission workbooks up to date with ConnectWise.</p></div><span id="phase-badge" class="pill">Getting ready</span></div>
+    <ol class="steps" aria-label="Reconciliation steps"><li id="step-1"><span>01</span> Choose workbooks</li><li id="step-2"><span>02</span> Connect to ConnectWise</li><li id="step-3"><span>03</span> Review results</li></ol>
+    <div id="connection-error" class="alert error" role="alert" hidden>Connection to the desktop app was interrupted. Reconnecting… Keep this window open while a run is in progress.</div>
+    <div id="error" class="alert error" role="alert" hidden></div>
+    <div class="workspace">
+      <section class="card workbook-card" aria-labelledby="workbook-heading">
+        <div class="card-heading"><div><p class="eyebrow">YOUR WORKSPACE</p><h2 id="workbook-heading">Commission workbooks</h2></div><button id="refresh" class="button subtle">Refresh</button></div>
+        <div class="folder-box"><div class="folder-icon" aria-hidden="true">▱</div><div class="folder-text"><span class="field-label">Workbook folder</span><p id="folder-path">Choose the folder containing your workbooks</p></div><button id="change-folder" class="button secondary">Choose folder</button></div>
+        <div class="list-toolbar"><label><input id="select-all" type="checkbox"> <span>Select all</span></label><span id="selection-count">0 selected</span></div>
+        <div id="workbook-list" class="workbook-list"></div>
+        <div id="empty" class="empty"><span class="empty-symbol" aria-hidden="true">▤</span><h3>Start with your workbook folder</h3><p>Select the folder where you keep your commission workbooks. Your choice will be remembered.</p></div>
+        <details id="skipped" class="skipped" hidden><summary id="skipped-label"></summary><ul id="skipped-list"></ul></details>
+        <div class="card-footnote">Close the selected workbooks in Excel before starting.</div>
+      </section>
+      <aside class="card run-card" aria-labelledby="run-heading">
+        <p class="eyebrow">RECONCILE WITH CONFIDENCE</p><h2 id="run-heading">Ready when you are</h2>
+        <p id="run-description" class="muted">Choose your workbooks, then open ConnectWise to sign in.</p>
+        <div id="login-notice" class="login-notice" hidden><strong>Sign in to ConnectWise</strong><p>Use the ConnectWise window that just opened. Once it is fully loaded, return here and continue.</p></div>
+        <div id="progress-panel" class="progress-panel" aria-live="polite" hidden><span id="progress-workbook" class="field-label"></span><strong id="progress-name"></strong><progress id="progress-bar" max="100"></progress><p id="progress-detail"></p><p class="small muted">Keep this app and the ConnectWise window open until processing finishes.</p></div>
+        <div id="run-plan" class="run-plan"><div><span class="check">✓</span><p><strong>ConnectWise is the source of truth</strong><span>Invoice amounts, invoice dates, paid amounts, and paid dates.</span></p></div><div><span class="check">✓</span><p><strong>Your original is backed up</strong><span>Before any changes are saved.</span></p></div><div><span class="check">✓</span><p><strong>A summary for every workbook</strong><span>See what changed and what needs review.</span></p></div></div>
+        <button id="primary" class="button primary">Open ConnectWise <span aria-hidden="true">→</span></button>
+        <button id="cancel-login" class="button subtle full" hidden>Cancel this run</button>
+        <p id="run-hint" class="small muted centered">Workbooks are processed one at a time.</p>
+      </aside>
+    </div>
+    <section id="results" class="card results-card" aria-labelledby="results-heading" hidden><div class="card-heading"><div><p class="eyebrow">RUN OUTCOME</p><h2 id="results-heading">Reconciliation results</h2><p id="result-overview" class="muted" aria-live="polite"></p></div><div class="folder-actions"><button id="open-logs" class="button secondary">Logs folder</button><button id="open-backups" class="button secondary">Backups folder</button></div></div><div class="table-scroll"><table><thead><tr><th>Workbook</th><th>Result</th><th>Changes</th><th>Details</th></tr></thead><tbody id="result-rows"></tbody></table></div></section>
+    <details id="activity" class="card activity"><summary>Activity log <span>Technical details for this session</span></summary><pre id="log" aria-label="Activity log"></pre></details>
+    <footer>PHDTech <span>·</span> Commission Tool <span>·</span> Your workbooks stay on this computer or your selected shared drive.</footer>
+  </main>
+  <dialog id="folder-dialog"><form id="folder-form"><div class="dialog-heading"><h2>Choose your workbook folder</h2><button type="button" class="button subtle close-dialog" aria-label="Close">✕</button></div><p>The Windows folder picker could not be opened. Enter the full folder path below.</p><label class="field-label" for="folder-input">Folder path</label><input id="folder-input" class="text-input" placeholder="C:\Company\Commission Workbooks" required><div class="dialog-actions"><button type="button" class="button secondary close-dialog">Cancel</button><button class="button primary" type="submit">Save folder</button></div></form></dialog>
+  <dialog id="summary-dialog" class="summary-dialog"><div class="dialog-heading"><h2 id="summary-title">Run summary</h2><button class="button subtle close-dialog" aria-label="Close">✕</button></div><pre id="summary-text"></pre></dialog>
+</body>
+</html>

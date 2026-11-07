@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.1.0"
+  #define AppVersion "1.2.0"
 #endif
 #ifndef PackageDir
   #define PackageDir "..\dist\package"
@@ -23,7 +23,7 @@ Compression=lzma2/normal
 SolidCompression=yes
 OutputDir=..\dist
 OutputBaseFilename=PHDTech-Commission-Tool-Setup-{#AppVersion}
-UninstallDisplayIcon={app}\runtime\node.exe
+UninstallDisplayIcon={app}\PHDTech Commission Tool.exe
 SetupLogging=yes
 RestartApplications=no
 
@@ -34,8 +34,8 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 Source: "{#PackageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\PHDTech Commission Tool"; Filename: "{app}\Run Commission Tool.cmd"; WorkingDir: "{app}"
-Name: "{autodesktop}\PHDTech Commission Tool"; Filename: "{app}\Run Commission Tool.cmd"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{group}\PHDTech Commission Tool"; Filename: "{app}\PHDTech Commission Tool.exe"; WorkingDir: "{app}"
+Name: "{autodesktop}\PHDTech Commission Tool"; Filename: "{app}\PHDTech Commission Tool.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\Run Commission Tool.cmd"; WorkingDir: "{app}"; Description: "Launch PHDTech Commission Tool"; Flags: shellexec nowait postinstall skipifsilent
+Filename: "{app}\PHDTech Commission Tool.exe"; WorkingDir: "{app}"; Description: "Launch PHDTech Commission Tool"; Flags: nowait postinstall skipifsilent

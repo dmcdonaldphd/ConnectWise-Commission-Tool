@@ -3,6 +3,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { randomUUID } = require('crypto');
 const { CHANGE_ACTIONS, saveRunAudit, describeRunStatus } = require('./audit');
+const console = require('./log').logger;
 
 const paths = require('./paths');
 
@@ -325,7 +326,8 @@ function printSummary(summary) {
   );
 }
 
-async function reconcileWorkbook(context, workbookFilename) {
+async function reconcileWorkbook(context, workbookFilename, { onProgress } = {}) {
+  const progress = update => { try { onProgress?.(update); } catch { /* UI reporting cannot interrupt reconciliation. */ } };
   if (!context || !context.request) {
     throw new Error('An authenticated ConnectWise browser context is required.');
   }
@@ -495,6 +497,7 @@ async function reconcileWorkbook(context, workbookFilename) {
     const projectLists = new Map();
     const sourceProjects = new Map();
     for (const project of projects) {
+      progress({ stage: 'retrieving', current: projectLists.size + 1, total: projects.length, projectID: project.projectID });
       try {
         const invoices = await getProjectInvoices(context.request, project.projectID);
         projectLists.set(project.projectID, { invoices });
@@ -542,6 +545,7 @@ async function reconcileWorkbook(context, workbookFilename) {
       projectIndex += 1
     ) {
       const project = projects[projectIndex];
+      progress({ stage: 'reconciling', current: projectIndex + 1, total: projects.length, projectID: project.projectID });
       summary.projectsProcessed += 1;
 
       console.log(
@@ -1247,6 +1251,7 @@ async function reconcileWorkbook(context, workbookFilename) {
     console.log('Applying workbook changes without Microsoft Excel...');
 
     saveRunAudit({ ...result(), status: 'PLANNED' }, auditEntries);
+    progress({ stage: 'saving' });
     const writerResult = spawnSync(
       process.execPath,
       [writerScriptPath, writePayloadPath, writerTracePath],
@@ -1294,6 +1299,8 @@ async function reconcileWorkbook(context, workbookFilename) {
   } catch (error) {
     fatalError = error;
     error.auditLogPath = auditLogPath;
+    error.summaryLogPath = summaryLogPath;
+    error.runResult = result();
     addAuditEntry(auditEntries, { action: 'RUN_ERROR', result: 'FAILED', notes: error.message });
     throw error;
   } finally {
@@ -1306,6 +1313,7 @@ async function reconcileWorkbook(context, workbookFilename) {
       if (entry.result === 'PLANNED') entry.result = writeUncertain ? 'UNCONFIRMED' : workbookWritten ? 'APPLIED' : 'NOT_APPLIED';
     }
     const outcome = result();
+    if (fatalError) fatalError.runResult = outcome;
     addAuditEntry(auditEntries, { action: 'RUN_SUMMARY', result: outcome.status,
       notes: `${summary.projectsSucceeded} completed project(s), ${summary.projectsFailed} failed; workbook ${writeUncertain ? 'write outcome unconfirmed; compare with backup' : workbookWritten ? 'updated' : 'unchanged'}.` });
     try {
@@ -1315,7 +1323,7 @@ async function reconcileWorkbook(context, workbookFilename) {
       console.log(`Run summary: ${summaryLogPath}`);
     } catch (auditError) {
       console.error(`Could not finalize the audit: ${auditError.message}`);
-      if (!fatalError) throw Object.assign(new Error(`Workbook ${workbookWritten ? 'was saved' : 'was not changed'}, but its final audit could not be saved: ${auditError.message}`), { auditLogPath });
+      if (!fatalError) throw Object.assign(new Error(`Workbook ${workbookWritten ? 'was saved' : 'was not changed'}, but its final audit could not be saved: ${auditError.message}`), { auditLogPath, summaryLogPath, runResult: outcome });
     }
   }
 }

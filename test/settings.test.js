@@ -249,3 +249,11 @@ test('discovery reads the selected directory rather than workbooks in the applic
     valid: [{ fileName: 'Selected.xlsx', paidHistorySheetNames: ['Paid to Emp 2026'] }], skipped: [],
   });
 });
+
+test('desktop initialization without saved settings does not open a picker or select a fallback', async t => {
+  const f = setup(t); let picked = false;
+  const before = paths.WORKBOOK_DIR;
+  assert.equal(await initializeWorkbookFolder({ store: createSettingsStore(f.state), prompt: false,
+    pickFolder: () => { picked = true; return f.workbooks; } }), false);
+  assert.equal(picked, false); assert.equal(paths.WORKBOOK_DIR, before);
+});

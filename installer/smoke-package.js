@@ -23,6 +23,7 @@ async function main() {
   const { COMMISSION_REQUIRED_HEADERS, loadWorkbook } = requireApp('./app/workbook');
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'commission-installed-smoke-'));
   let browser;
+  let desktop, desktopServer, desktopService;
   try {
     const headers = COMMISSION_REQUIRED_HEADERS;
     const workbook = new ExcelJS.Workbook();
@@ -56,9 +57,29 @@ async function main() {
     const page = await browser.newPage();
     await page.setContent('<h1>Packaged browser ready</h1>');
     assert.equal(await page.textContent('h1'), 'Packaged browser ready');
+    await require('./smoke-ui').smokeUi(browser, requireApp);
+    const launcher = fs.readFileSync(path.join(appDir, 'PHDTech Commission Tool.exe'));
+    const pe = launcher.readUInt32LE(0x3c);
+    assert.equal(launcher.readUInt32LE(pe), 0x4550, 'Launcher must be a Windows PE executable');
+    assert.equal(launcher.readUInt16LE(pe + 24 + 68), 2, 'Launcher must use the GUI subsystem, without a console');
+    desktopService = requireApp('./app/gui-service').createGuiService({ initialize: async () => false });
+    await desktopService.initialize();
+    desktopServer = await requireApp('./app/gui-server').createGuiServer(desktopService);
+    desktop = await requireApp('./app/gui').launchDesktopWindow(chromium, path.join(temporary, 'Desktop UI profile'), desktopServer.url);
+    const desktopPage = desktop.pages()[0] || await desktop.waitForEvent('page', { timeout: 15000 });
+    await desktopPage.waitForSelector('#workbook-heading');
+    assert.equal(await desktopPage.title(), 'PHDTech · Commission Tool');
+    assert.equal(desktop.pages().length, 1, 'Desktop launcher must open one app window without an extra blank tab');
+    await desktop.close(); desktop = null;
+    await desktopServer.close(); desktopServer = null;
+    await desktopService.close(); desktopService = null;
+    console.log('Native GUI executable and visible Chromium desktop-window startup passed.');
     console.log(JSON.stringify({ appVersion: requireApp('./package.json').version, node: process.version,
       playwright: requireApp('playwright/package.json').version, chromium: browser.version(), result: 'passed' }));
   } finally {
+    if (desktop) await desktop.close();
+    if (desktopServer) await desktopServer.close();
+    if (desktopService) await desktopService.close();
     if (browser) await browser.close();
     fs.rmSync(temporary, { recursive: true, force: true });
   }
