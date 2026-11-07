@@ -22,6 +22,8 @@ function Install-Preview {
     if ($process.ExitCode -ne 0) { throw "Installer failed with exit code $($process.ExitCode)." }
 }
 function Test-InstalledPackage {
+    $launcher = Start-Process -FilePath (Join-Path $installed 'PHDTech Commission Tool.exe') -ArgumentList '--self-check' -Wait -PassThru
+    if ($launcher.ExitCode -ne 0) { throw 'Installed desktop executable failed its self-check.' }
     & (Join-Path $installed 'runtime\node.exe') (Join-Path $PSScriptRoot 'smoke-package.js') $installed
     if ($LASTEXITCODE -ne 0) { throw 'Installed runtime, workbook writer or browser failed its smoke test.' }
 }

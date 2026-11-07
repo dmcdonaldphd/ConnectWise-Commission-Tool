@@ -5,6 +5,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { spawn, spawnSync } = require('node:child_process');
 const paths = require('./paths');
+const console = require('./log').logger;
 
 function validateWorkbookFolder(folder) {
   try {
@@ -86,7 +87,7 @@ function activateFolder(folder, store, save = false) {
 }
 
 async function chooseWorkbookFolder({ store = createSettingsStore(), ask,
-  initialFolder = paths.WORKBOOK_DIR, pickFolder } = {}) {
+  initialFolder = paths.WORKBOOK_DIR, pickFolder, throwOnError = false } = {}) {
   const picker = pickFolder || (process.platform === 'win32' ? pickWindowsFolder : () => {
     throw new Error('Native folder selection is available on Windows.');
   });
@@ -105,11 +106,12 @@ async function chooseWorkbookFolder({ store = createSettingsStore(), ask,
     return true;
   } catch (error) {
     console.error(`Folder selection was not completed: ${error.message}`);
+    if (throwOnError) throw error;
     return false;
   }
 }
 
-async function initializeWorkbookFolder({ store = createSettingsStore(), ask, pickFolder } = {}) {
+async function initializeWorkbookFolder({ store = createSettingsStore(), ask, pickFolder, prompt = true } = {}) {
   let settings;
   try { settings = store.load(); }
   catch (error) { console.warn(error.message); }
@@ -119,6 +121,7 @@ async function initializeWorkbookFolder({ store = createSettingsStore(), ask, pi
       return true;
     } catch (error) { console.warn(`Saved workbook folder is unavailable: ${error.message}`); }
   }
+  if (!prompt) return false;
   return chooseWorkbookFolder({ store, ask, pickFolder, initialFolder: paths.PROJECT_ROOT });
 }
 

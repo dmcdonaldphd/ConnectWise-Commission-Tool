@@ -11,7 +11,7 @@ with a Start Menu shortcut and an optional desktop shortcut.
 
 Preview builds are available from the **Windows installer preview** GitHub Actions
 workflow. Open a successful run, download its **PHDTech-Commission-Tool-Windows-x64**
-artifact, extract the ZIP, and run `PHDTech-Commission-Tool-Setup-1.1.0.exe`.
+artifact, extract the ZIP, and run `PHDTech-Commission-Tool-Setup-1.2.0.exe`.
 Launch the installed application from the Start Menu. For acceptance testing,
 choose a folder holding copies of the commission workbooks before processing.
 The installed application shares the remembered folder and browser profile with
@@ -23,24 +23,22 @@ preserved across updates and removal. The installer does not change system PATH
 or install development tools. Preview installers are unsigned and still require
 testing on a standard company workstation before general deployment.
 
-## Current working workflow (November 2026)
+## Desktop workflow (November 2026)
 
-1. Open `Run Commission Tool.cmd` from the project directory.
-2. On first launch, select the folder containing your working commission workbooks. The tool remembers it. Choose one workbook or **Process all workbooks** from that folder.
-3. Sign in to ConnectWise in the Playwright browser if needed, then press Enter in the console to continue.
-4. Review the proposed reconciliation changes. Before a write, the tool creates a timestamped file in the selected workbook folder's `Backups/` directory.
+1. Open **PHDTech Commission Tool** from the Start Menu or desktop shortcut. The installed executable opens the HTML desktop interface without a console window.
+2. Choose the folder containing your workbooks, or confirm the remembered folder. Check individual workbooks or **Select all**. Close selected files in Excel.
+3. Click **Open ConnectWise**, sign in in its separate browser window, then return to the app and click **Continue reconciliation**. Keep both windows open while processing finishes.
+4. Review progress and each workbook's result. Before a write, the tool creates a timestamped file in the selected workbook folder's `Backups/` directory. **Run summary** opens the readable saved summary inside the app; failed and partially failed runs are explicitly identified.
 5. The writer edits XLSX files directly (no Microsoft Excel COM automation), and records reconciliation CSVs, run summaries and writer logs in that folder's `Logs/` directory.
 6. Open changed workbooks in Microsoft Excel and allow formula recalculation before using commission totals for payroll. Review any workbook-only invoices flagged for manual review.
 
 ## Workbook folder and settings
 
-The menu always shows the active workbook folder. **Change workbook folder** opens
-a folder picker; canceling keeps the current selection. **Open Logs folder** and
-**Open Backups folder** launch visible Windows Explorer windows for the current
-selection and print the requested folder path. Explorer runs independently of the
-console menu; launch errors include the Windows error and full folder path. **0. Exit**
-closes the tool before connecting to ConnectWise. If a folder is empty or no longer
-available, choose another folder from the menu. The scan is not recursive and
+The interface always shows the active workbook folder. **Change** opens a folder
+picker; canceling keeps the current selection. Results include **Logs folder** and
+**Backups folder** buttons that open Windows Explorer. The activity log contains
+technical details. If a folder is empty or no longer available, choose another
+folder. The scan is not recursive and
 excludes Excel lock files, working copies, and the tool's timestamped backups.
 Select the folder holding the working workbooks, not a backup folder.
 
@@ -63,7 +61,7 @@ they are not copied into or deleted by the new settings workflow.
 Copies of the application run by the same Windows user share these settings and
 the browser profile. When testing on copied workbooks, choose the test folder and
 later use **Change workbook folder** to restore the regular workbook folder.
-An unavailable or malformed saved selection prompts for a new selection; it never
+An unavailable or malformed saved selection requires a new selection; it never
 silently falls back to processing the application directory. Settings are replaced
 atomically only after an explicit valid folder selection.
 
@@ -144,7 +142,19 @@ npm ci
 npx playwright install chromium
 ```
 
-To launch without the bundled `runtime/node.exe`, run `npm start` or `node app\commission-menu.js`. The included `.cmd` launcher expects the portable runtime under `runtime/` and supports application paths containing spaces.
+The source checkout starts the desktop interface with `npm start` or
+`node app/gui.js`. `npm run start:console` retains the validated console workflow
+for troubleshooting. `Run Commission Tool.cmd` opens the installed executable when
+present and otherwise starts the source desktop interface.
+
+The HTML/CSS/JavaScript interface is served only on `127.0.0.1` at a temporary port
+and displayed by the bundled Chromium in an app window. It uses an unpredictable
+session token, verifies request host/origin, and loads no remote scripts or fonts.
+It is not a hosted website. ConnectWise still opens separately for authentication;
+the financial engine and direct XLSX writer are shared by both interfaces.
+Selecting another folder or starting another run is blocked during processing.
+Closing the desktop window lets the selected batch finish before closing the
+ConnectWise session; it never forcibly terminates the writer.
 
 Source checkouts still need the setup above. The installer preview includes these
 components; end users of the installer do not perform developer setup.
@@ -156,11 +166,12 @@ Use a Windows x64 build machine with Node.js 24 and Inno Setup 6, then run
 files are staged under `dist/package`, and the setup EXE is written to `dist`.
 The build copies an explicit list of application files and the bundled Node runtime,
 installs production dependencies using the lockfile, downloads compatible Chromium,
-rejects workbook/profile data, and smoke-tests the packaged writer and browser.
+rejects workbook/profile data, compiles a small Windows GUI launcher using the
+built-in .NET Framework compiler, and smoke-tests the packaged writer and browser.
 No dependency versions were upgraded for packaging.
 
 The Windows workflow also installs the EXE into a path with spaces, tests its
-bundled runtime, actual XLSX writer and headless browser, reinstalls it, and removes
+bundled runtime, executable launcher, actual XLSX writer and desktop UI, reinstalls it, and removes
 it. Synthetic settings, browser-profile and workbook markers must survive each
 step, including an untracked workbook inside the application directory. These
 checks are separate from real ConnectWise/desktop Excel and company-PC testing.
@@ -185,7 +196,8 @@ workbooks remain separate Windows acceptance checks.
 
 ## Key source files
 
-- `app/commission-menu.js`: workbook discovery and ConnectWise browser session
+- `app/gui.js`, `gui-service.js`, `gui-server.js`, `ui/`: desktop window, workflow, local server and HTML interface
+- `app/commission-menu.js`: shared workbook discovery and console fallback
 - `app/settings.js`: folder selection, per-user settings, and opening logs/backups
 - `app/paths.js`: application root and configured workbook/per-user paths
 - `app/connectwise.js`: ConnectWise retrieval

@@ -100,7 +100,7 @@ function source(invoice, { project = 101, amount = 1234.56, date = SOURCE_DATE,
     date_paid: status === 'Paid' ? SOURCE_DATE : null };
 }
 
-async function reconcile(fixture, invoices, { failInvoice, failProject } = {}) {
+async function reconcile(fixture, invoices, { failInvoice, failProject, onProgress } = {}) {
   const requests = [];
   const context = { request: { post: async (url, options) => {
     const outer = JSON.parse(new URLSearchParams(options.data).get('actionMessage'));
@@ -125,7 +125,7 @@ async function reconcile(fixture, invoices, { failInvoice, failProject } = {}) {
   } } };
   let outcome;
   try {
-    outcome = await reconcileWorkbook(context, path.basename(fixture.target));
+    outcome = await reconcileWorkbook(context, path.basename(fixture.target), { onProgress });
     fixture.lastAuditPath = outcome.auditLogPath;
   } catch (error) {
     fixture.lastAuditPath = error.auditLogPath;
@@ -597,4 +597,28 @@ test('selected-folder reconciliation writes only the selected copy, with backups
   assert.equal(path.dirname(result.outcome.backupPath), path.join(selected, 'Backups'));
   assert.equal(paths.PROFILE_DIR, path.join(state, 'connectwise-profile'));
   assert.deepEqual(fs.readdirSync(path.join(state, 'Temp')), []);
+});
+
+test('desktop progress observes the real engine and reporting errors cannot interrupt a save', async t => {
+  const f = await setup(t, [{ 'Project ID': 101, 'Invoice #': 'INV-UI' }]);
+  const stages = [];
+  const result = await reconcile(f, [source('INV-UI')], { onProgress: update => {
+    stages.push(update.stage);
+    throw new Error('Synthetic disconnected UI');
+  } });
+  assert.equal(result.outcome.status, 'COMPLETED');
+  assert.equal(result.outcome.workbookWritten, true);
+  assert.deepEqual(stages, ['retrieving', 'reconciling', 'saving']);
+  assert.equal(result.cell(2, 'Inv Amt (Pretax)').value, 1234.56);
+});
+
+test('failed engine runs expose their saved summary and unchanged-write outcome to the UI', async t => {
+  const f = await setup(t, [{ 'Project ID': 101 }], { headers: HEADERS.filter(name => name !== 'Invoice Date') });
+  await assert.rejects(reconcile(f, []), error => {
+    assert(fs.existsSync(error.summaryLogPath));
+    assert.equal(error.runResult.workbookWritten, false);
+    assert.equal(error.runResult.status, 'FAILED');
+    assert.match(fs.readFileSync(error.summaryLogPath, 'utf8'), /Result: Failed/);
+    return true;
+  });
 });

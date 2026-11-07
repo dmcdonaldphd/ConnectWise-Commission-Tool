@@ -14,7 +14,8 @@ function fixture(t) {
     const target = path.join(root, name);
     fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, data);
   }
-  for (const name of ['app.js', 'audit.js', 'commission-menu.js', 'connectwise.js', 'paths.js', 'settings.js', 'workbook.js', 'xlsx-writer.js']) write(`app/${name}`, '// Synthetic source');
+  for (const name of ['app.js', 'audit.js', 'commission-menu.js', 'connectwise.js', 'paths.js', 'settings.js', 'workbook.js', 'xlsx-writer.js',
+    'log.js', 'gui.js', 'gui-service.js', 'gui-server.js', 'ui/index.html', 'ui/styles.css', 'ui/ui.js']) write(`app/${name}`, '// Synthetic source');
   write('runtime/node.exe'); write('runtime/LICENSE'); write('Run Commission Tool.cmd');
   write('installer/QUICK_START.txt');
   write('package.json', JSON.stringify({ name: 'synthetic', version: '1.1.0', dependencies: { playwright: '1.62.0', jszip: '3.10.1' } }));
@@ -23,6 +24,7 @@ function fixture(t) {
 }
 
 function finishFakePackage(f) {
+  f.write('dist/package/PHDTech Commission Tool.exe');
   for (const name of ['playwright/package.json', 'exceljs/package.json', 'jszip/package.json']) f.write(`dist/package/node_modules/${name}`, '{}');
   f.write('dist/package/browsers/synthetic-browser/chrome.exe');
 }
