@@ -15,7 +15,9 @@ Internal Windows tool for reconciling ConnectWise PSA invoice payments against e
 
 The menu always shows the active workbook folder. **Change workbook folder** opens
 a folder picker; canceling keeps the current selection. **Open Logs folder** and
-**Open Backups folder** open the folders for the current selection. **0. Exit**
+**Open Backups folder** launch visible Windows Explorer windows for the current
+selection and print the requested folder path. Explorer runs independently of the
+console menu; launch errors include the Windows error and full folder path. **0. Exit**
 closes the tool before connecting to ConnectWise. If a folder is empty or no longer
 available, choose another folder from the menu. The scan is not recursive and
 excludes Excel lock files, working copies, and the tool's timestamped backups.

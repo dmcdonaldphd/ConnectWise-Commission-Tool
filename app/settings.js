@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const paths = require('./paths');
 
 function validateWorkbookFolder(folder) {
@@ -125,11 +125,28 @@ async function initializeWorkbookFolder({ store = createSettingsStore(), ask, pi
 function openFolder(folder) {
   validateWorkbookFolder(path.dirname(folder));
   if (!fs.existsSync(folder)) fs.mkdirSync(folder);
-  const command = process.platform === 'win32' ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open';
-  const result = spawnSync(command, [folder], { windowsHide: true, stdio: 'ignore' });
-  // Explorer can return a nonzero status even after opening its window.
-  if (result.error || (process.platform !== 'win32' && result.status !== 0))
-    throw new Error(`Could not open this folder: ${folder}`);
+  if (!fs.statSync(folder).isDirectory()) throw new Error(`This location is not a folder: ${folder}`);
+  const failed = error => new Error(`Could not open this folder: ${folder}${error ? ` — ${error.message}` : ''}`);
+  if (process.platform === 'win32') {
+    // Explorer is a desktop application. Do not hide its window or wait for its
+    // lifetime; it can also hand the request to an existing Explorer process.
+    return new Promise((resolve, reject) => {
+      let child;
+      try {
+        child = spawn('explorer.exe', [folder], { detached: true, windowsHide: false, stdio: 'ignore' });
+      } catch (error) { reject(failed(error)); return; }
+      child.once('error', error => reject(failed(error)));
+      child.once('spawn', () => {
+        child.unref();
+        console.log(`Opening folder: ${folder}`);
+        resolve();
+      });
+    });
+  }
+  const command = process.platform === 'darwin' ? 'open' : 'xdg-open';
+  const result = spawnSync(command, [folder], { stdio: 'ignore' });
+  if (result.error || result.status !== 0) throw failed(result.error);
+  console.log(`Opening folder: ${folder}`);
 }
 
 module.exports = { createSettingsStore, chooseWorkbookFolder, initializeWorkbookFolder,
