@@ -5,11 +5,53 @@ Internal Windows tool for reconciling ConnectWise PSA invoice payments against e
 ## Current working workflow (November 2026)
 
 1. Open `Run Commission Tool.cmd` from the project directory.
-2. Choose one workbook or **Process all workbooks**. The current launcher discovers eligible `*.xlsx` files in the same folder as the project.
+2. On first launch, select the folder containing your working commission workbooks. The tool remembers it. Choose one workbook or **Process all workbooks** from that folder.
 3. Sign in to ConnectWise in the Playwright browser if needed, then press Enter in the console to continue.
-4. Review the proposed reconciliation changes. Before a write, the tool creates a timestamped file in `Backups/`.
-5. The writer edits XLSX files directly (no Microsoft Excel COM automation), and records a reconciliation CSV plus writer log in `Logs/`.
+4. Review the proposed reconciliation changes. Before a write, the tool creates a timestamped file in the selected workbook folder's `Backups/` directory.
+5. The writer edits XLSX files directly (no Microsoft Excel COM automation), and records reconciliation CSVs, run summaries and writer logs in that folder's `Logs/` directory.
 6. Open changed workbooks in Microsoft Excel and allow formula recalculation before using commission totals for payroll. Review any workbook-only invoices flagged for manual review.
+
+## Workbook folder and settings
+
+The menu always shows the active workbook folder. **Change workbook folder** opens
+a folder picker; canceling keeps the current selection. **Open Logs folder** and
+**Open Backups folder** launch visible Windows Explorer windows for the current
+selection and print the requested folder path. Explorer runs independently of the
+console menu; launch errors include the Windows error and full folder path. **0. Exit**
+closes the tool before connecting to ConnectWise. If a folder is empty or no longer
+available, choose another folder from the menu. The scan is not recursive and
+excludes Excel lock files, working copies, and the tool's timestamped backups.
+Select the folder holding the working workbooks, not a backup folder.
+
+The application does not move workbooks or existing backups/logs when a folder
+is selected. New backups and logs go inside the selected workbook folder. Settings,
+the browser profile and temporary write plans are stored per Windows user under:
+
+```text
+%LOCALAPPDATA%\PHDTech\Commission Tool\
+├── settings.json
+├── connectwise-profile\
+└── Temp\
+```
+
+The first run of this version may require signing into ConnectWise again because
+the browser profile now lives in the per-user location. Changing workbook folders
+does not clear that profile. Old project-folder profiles are retained for rollback;
+they are not copied into or deleted by the new settings workflow.
+
+Copies of the application run by the same Windows user share these settings and
+the browser profile. When testing on copied workbooks, choose the test folder and
+later use **Change workbook folder** to restore the regular workbook folder.
+An unavailable or malformed saved selection prompts for a new selection; it never
+silently falls back to processing the application directory. Settings are replaced
+atomically only after an explicit valid folder selection.
+
+The Windows folder picker uses the built-in Windows Forms dialog through
+PowerShell; it performs no workbook operations or Excel automation. If company
+policy blocks it, the tool offers a full-folder-path prompt instead (pasted quoted
+paths are accepted). For isolated development/testing, `PHD_COMMISSION_DATA_DIR`
+can point to a separate private data directory. Normal users need no environment
+variables or configuration-file edits.
 
 ## Invoice amount and date
 
@@ -81,7 +123,7 @@ npm ci
 npx playwright install chromium
 ```
 
-To launch without the bundled `runtime/node.exe`, run `node app\commission-menu.js`. The included `.cmd` launcher expects the portable runtime under `runtime/`.
+To launch without the bundled `runtime/node.exe`, run `npm start` or `node app\commission-menu.js`. The included `.cmd` launcher expects the portable runtime under `runtime/` and supports application paths containing spaces.
 
 **There is not yet a validated zero-dependency Windows installer.** Deployment currently requires the Node dependencies and Playwright Chromium browser to be present; this will be addressed separately.
 
@@ -95,7 +137,8 @@ launching a browser, connecting to ConnectWise, or using Microsoft Excel.
 Coverage includes source corrections and reversals, sparse paid history, duplicate
 prevention, failed-project rollback, saved run outcomes, pagination, header mapping,
 blank-row fills, insertion with and without table growth, highlights, repeated
-runs, backups, formulas, historical sheets, and rejected writes. GitHub Actions
+runs, backups, formulas, historical sheets, rejected writes, remembered folders,
+selection cancellation/recovery, and selected-folder reconciliation. GitHub Actions
 runs the suite on Linux and Windows in UTC and America/Chicago time zones.
 Desktop Excel recalculation and a live run against copies of the six production
 workbooks remain separate Windows acceptance checks.
@@ -103,6 +146,8 @@ workbooks remain separate Windows acceptance checks.
 ## Key source files
 
 - `app/commission-menu.js`: workbook discovery and ConnectWise browser session
+- `app/settings.js`: folder selection, per-user settings, and opening logs/backups
+- `app/paths.js`: application root and configured workbook/per-user paths
 - `app/connectwise.js`: ConnectWise retrieval
 - `app/app.js`: reconciliation and write-plan generation
 - `app/workbook.js`: workbook reading, header mapping and paid-history support
@@ -111,4 +156,8 @@ workbooks remain separate Windows acceptance checks.
 
 ## Known scope
 
-This repository sync reflects the Windows version validated in November 2026, which still uses workbooks next to the launcher. Earlier experiments with first-run workbook-folder selection and an Inno Setup installer are **not included** in this baseline; they should be integrated and tested in a separate change.
+The reconciliation baseline was validated against the six production workbooks in
+November 2026. Remembered workbook-folder selection and per-user storage prepare
+the application for installation; the native folder dialog and live workflow need
+their own Windows acceptance run. A bundled Windows installer remains separate
+follow-up work and is not yet implemented or validated.

@@ -28,6 +28,12 @@ tests; avoid major rewrites or additional dependencies without a demonstrated ne
   failures clearly; do not label a partial run as wholly successful.
 - Never commit employee workbooks, payment records, credentials, browser profiles,
   real backups or sensitive logs. Tests generate synthetic fixtures in temp folders.
+- Keep workbooks/backups/logs in the explicitly selected workbook directory and
+  settings/browser profiles/temp plans in the per-user data directory. Display the
+  selected folder, preserve it on cancellation/failure, and never silently switch
+  to the application directory when it becomes unavailable. Do not move user data.
+- Folder-picker PowerShell is limited to the native Windows Forms selection dialog,
+  with a typed-path fallback; it must not automate Excel or perform workbook writes.
 
 ## Development and validation
 

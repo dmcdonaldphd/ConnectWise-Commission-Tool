@@ -6,6 +6,7 @@ const { chromium, BASE_URL } = require('./connectwise');
 const { loadWorkbook } = require('./workbook');
 const { reconcileWorkbook } = require('./app');
 const { describeRunStatus } = require('./audit');
+const { createSettingsStore, initializeWorkbookFolder, chooseWorkbookFolder, openFolder } = require('./settings');
 
 const paths = require('./paths');
 
@@ -29,7 +30,8 @@ function isCandidateFile(fileName) {
   return (
     lower.endsWith('.xlsx') &&
     !lower.startsWith('~$') &&
-    !lower.endsWith('.working.xlsx')
+    !lower.endsWith('.working.xlsx') &&
+    !/ - \d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:-[a-f0-9]{8})?\.xlsx$/.test(lower)
   );
 }
 
@@ -96,53 +98,60 @@ async function findCommissionWorkbooks() {
   return { valid, skipped };
 }
 
-async function main() {
-  const discovery = await findCommissionWorkbooks();
-  const workbooks = discovery.valid;
-
-  if (workbooks.length === 0) {
-    throw new Error(
-      'No eligible commission workbooks were found. Each workbook must contain a Commission sheet and at least one sheet whose name begins with "Paid to Emp".'
-    );
-  }
-
-  console.log('');
-  console.log('Commission workbooks found:');
-  console.log('');
-
-  workbooks.forEach((workbookInfo, index) => {
-    console.log(`${index + 1}. ${workbookInfo.fileName}`);
-    console.log(
-      `   Paid history: ${workbookInfo.paidHistorySheetNames.join(', ')}`
-    );
-  });
-
-  if (discovery.skipped.length > 0) {
+async function selectWorkbooks({ ask: askQuestion = ask, discover = findCommissionWorkbooks,
+  changeFolder, openDirectory = openFolder } = {}) {
+  const chooseAnotherFolder = changeFolder || (() => chooseWorkbookFolder({ ask: askQuestion }));
+  while (true) {
+    let discovery;
+    try { discovery = await discover(); }
+    catch (error) {
+      console.error(`Could not read the workbook folder: ${error.message}`);
+      discovery = { valid: [], skipped: [] };
+    }
+    const workbooks = discovery.valid;
     console.log('');
-    console.log('Other Excel workbooks skipped:');
-    discovery.skipped.forEach((item) => {
-      console.log(`- ${item.fileName}: ${item.reason}`);
+    console.log(`Workbook folder: ${paths.WORKBOOK_DIR}`);
+    console.log('');
+    const options = workbooks.map(info => ({ label: info.fileName, workbook: info }));
+    if (workbooks.length) options.push({ label: 'Process all workbooks', action: 'all' });
+    else console.log('No eligible commission workbooks found. Choose a folder containing Commission and Paid to Emp worksheets.');
+    options.push({ label: 'Change workbook folder', action: 'change' },
+      { label: 'Open Logs folder', action: 'logs' }, { label: 'Open Backups folder', action: 'backups' });
+    options.forEach((option, index) => {
+      console.log(`${index + 1}. ${option.label}`);
+      if (option.workbook) console.log(`   Paid history: ${option.workbook.paidHistorySheetNames.join(', ')}`);
     });
+    console.log('0. Exit');
+    if (discovery.skipped.length) {
+      console.log('Other Excel workbooks skipped:');
+      for (const item of discovery.skipped) console.log(`- ${item.fileName}: ${item.reason}`);
+    }
+    const answer = String(await askQuestion('Select an option: ')).trim();
+    if (answer === '0') return null;
+    const selection = Number(answer);
+    if (!answer || !Number.isInteger(selection) || selection < 1 || selection > options.length) {
+      console.log('Invalid selection. Please choose one of the listed options.');
+      continue;
+    }
+    const option = options[selection - 1];
+    if (option.workbook) return [option.workbook];
+    if (option.action === 'all') return workbooks;
+    if (option.action === 'change') await chooseAnotherFolder();
+    else {
+      try { await openDirectory(option.action === 'logs' ? paths.LOG_DIR : paths.BACKUP_DIR); }
+      catch (error) { console.error(error.message); }
+    }
   }
+}
 
-  console.log(`${workbooks.length + 1}. Process all workbooks`);
-  console.log('');
-
-  const answer = await ask('Select an option: ');
-  const selection = Number(answer);
-
-  if (
-    !Number.isInteger(selection) ||
-    selection < 1 ||
-    selection > workbooks.length + 1
-  ) {
-    throw new Error('Invalid selection.');
+async function main() {
+  const store = createSettingsStore();
+  if (!await initializeWorkbookFolder({ store, ask })) {
+    console.log('The tool has closed without processing any workbooks.');
+    return;
   }
-
-  const selected =
-    selection === workbooks.length + 1
-      ? workbooks
-      : [workbooks[selection - 1]];
+  const selected = await selectWorkbooks({ changeFolder: () => chooseWorkbookFolder({ store, ask }) });
+  if (!selected) return;
 
   console.log('');
   console.log('Launching ConnectWise...');
@@ -214,4 +223,4 @@ if (require.main === module) main().catch((error) => {
   process.exitCode = 1;
 });
 
-module.exports = { processWorkbooks, findCommissionWorkbooks, main };
+module.exports = { processWorkbooks, findCommissionWorkbooks, selectWorkbooks, main };
