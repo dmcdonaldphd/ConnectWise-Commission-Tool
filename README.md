@@ -2,6 +2,27 @@
 
 Internal Windows tool for reconciling ConnectWise PSA invoice payments against employee commission Excel workbooks.
 
+## Windows installer preview
+
+The installer packages the portable Node runtime, production dependencies, and the
+Chromium revision matching the locked Playwright version. On a workstation it
+requires no npm commands or separate browser download. Installation is per user,
+with a Start Menu shortcut and an optional desktop shortcut.
+
+Preview builds are available from the **Windows installer preview** GitHub Actions
+workflow. Open a successful run, download its **PHDTech-Commission-Tool-Windows-x64**
+artifact, extract the ZIP, and run `PHDTech-Commission-Tool-Setup-1.1.0.exe`.
+Launch the installed application from the Start Menu. For acceptance testing,
+choose a folder holding copies of the commission workbooks before processing.
+The installed application shares the remembered folder and browser profile with
+other copies run by the same Windows user; confirm the displayed folder.
+
+The default application location is `%LOCALAPPDATA%\Programs\PHDTech Commission Tool`.
+Workbooks, backups, logs, settings and browser sign-in remain separate and are
+preserved across updates and removal. The installer does not change system PATH
+or install development tools. Preview installers are unsigned and still require
+testing on a standard company workstation before general deployment.
+
 ## Current working workflow (November 2026)
 
 1. Open `Run Commission Tool.cmd` from the project directory.
@@ -125,7 +146,26 @@ npx playwright install chromium
 
 To launch without the bundled `runtime/node.exe`, run `npm start` or `node app\commission-menu.js`. The included `.cmd` launcher expects the portable runtime under `runtime/` and supports application paths containing spaces.
 
-**There is not yet a validated zero-dependency Windows installer.** Deployment currently requires the Node dependencies and Playwright Chromium browser to be present; this will be addressed separately.
+Source checkouts still need the setup above. The installer preview includes these
+components; end users of the installer do not perform developer setup.
+
+## Building the installer
+
+Use a Windows x64 build machine with Node.js 24 and Inno Setup 6, then run
+`npm run build:installer`. Downloads happen on the build machine. Distribution
+files are staged under `dist/package`, and the setup EXE is written to `dist`.
+The build copies an explicit list of application files and the bundled Node runtime,
+installs production dependencies using the lockfile, downloads compatible Chromium,
+rejects workbook/profile data, and smoke-tests the packaged writer and browser.
+No dependency versions were upgraded for packaging.
+
+The Windows workflow also installs the EXE into a path with spaces, tests its
+bundled runtime, actual XLSX writer and headless browser, reinstalls it, and removes
+it. Synthetic settings, browser-profile and workbook markers must survive each
+step, including an untracked workbook inside the application directory. These
+checks are separate from real ConnectWise/desktop Excel and company-PC testing.
+`installer/test-install.ps1` is a CI smoke test and refuses an account with existing
+application data or an installed copy. It is not an end-user setup command.
 
 ## Automated regression tests
 
@@ -158,6 +198,6 @@ workbooks remain separate Windows acceptance checks.
 
 The reconciliation baseline was validated against the six production workbooks in
 November 2026. Remembered workbook-folder selection and per-user storage prepare
-the application for installation; the native folder dialog and live workflow need
-their own Windows acceptance run. A bundled Windows installer remains separate
-follow-up work and is not yet implemented or validated.
+the application for installation and have been checked on Windows. Installer
+packaging is a preview with automated Windows install/update/removal checks;
+company-PC installation and live reconciliation remain its acceptance gate.

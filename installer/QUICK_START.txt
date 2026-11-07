@@ -1,0 +1,20 @@
+PHDTech Commission Tool
+
+1. Open PHDTech Commission Tool from the Start Menu or desktop shortcut.
+2. On first launch, select the folder containing your working commission workbooks.
+   The tool remembers this folder. You can change it from the menu.
+3. Select one workbook or Process all workbooks.
+4. Sign into ConnectWise in the browser if needed. Return to the tool and press
+   Enter when ConnectWise is ready.
+5. Review each run's result and any items marked for manual review.
+6. Open changed workbooks in Microsoft Excel and allow formulas to recalculate
+   before using commission totals for payroll.
+
+Backups and Logs are inside the selected workbook folder. Every run saves a
+readable Run Summary in Logs. Close a workbook in Excel before reconciling it.
+
+The installer includes Node.js, application dependencies, and the compatible
+Chromium browser. No separate development-tool installation is needed.
+
+Settings and browser sign-in are stored per Windows user. Updating or uninstalling
+the application preserves those settings and your separate workbook folder.

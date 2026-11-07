@@ -1,0 +1,43 @@
+name: Windows installer preview
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'installer/**'
+      - 'app/**'
+      - 'package*.json'
+      - 'Run Commission Tool.cmd'
+      - '.github/workflows/windows-installer.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    env:
+      TZ: America/Chicago
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test
+      - run: npm run build:installer
+      - name: Test install, update and removal
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem dist/PHDTech-Commission-Tool-Setup-*.exe | Select-Object -First 1
+          ./installer/test-install.ps1 -Installer $installer.FullName
+          (Get-FileHash $installer.FullName -Algorithm SHA256).Hash + '  ' + $installer.Name | Set-Content dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PHDTech-Commission-Tool-Windows-x64
+          path: |
+            dist/PHDTech-Commission-Tool-Setup-*.exe
+            dist/SHA256SUMS.txt
+          compression-level: 0
+          retention-days: 30

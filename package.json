@@ -1,22 +1,22 @@
 {
   "name": "connectwise-commissions",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "",
   "main": "app/commission-menu.js",
   "scripts": {
     "start": "node app/commission-menu.js",
-    "test": "node --test"
+    "test": "node --test",
+    "build:installer": "node installer/build.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
-  "devDependencies": {
-    "playwright": "^1.62.0"
-  },
   "dependencies": {
     "dotenv": "^17.4.2",
     "exceljs": "^4.4.0",
-    "playwright-core": "^1.62.0"
+    "playwright-core": "^1.62.0",
+    "playwright": "^1.62.0",
+    "jszip": "^3.10.1"
   }
 }

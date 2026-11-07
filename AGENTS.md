@@ -46,3 +46,13 @@ Keep Windows/live ConnectWise/desktop Excel acceptance distinct from synthetic C
 results. The six real production workbooks are the acceptance baseline. Do not
 claim validation that did not occur. Use branches and pull requests for meaningful
 changes, explain behavior in plain language, and include concrete test results.
+
+## Distribution
+
+Build the installer on Windows with `npm run build:installer`. Copy only the
+explicit distribution allowlist, production dependencies and compatible Chromium;
+never sweep a working directory into an installer. Never package workbooks, logs,
+settings or browser sessions. Keep the Inno Setup application ID stable. Do not
+delete user files or per-user data during an update/uninstall. Windows CI must
+check the actual installed Node, writer and browser plus preservation of existing
+data. An unsigned preview and synthetic CI do not establish company-PC acceptance.
